@@ -11,6 +11,8 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 import datetime
 import threading
 import random
+import time
+import heapq
 
 # ─────────────────────────────────────────────────
 #  MOCK DATABASE  — Prices in INR (₹)
@@ -60,12 +62,50 @@ PRODUCTS_DB = [
     {"id": 42, "name": "Minimal Floor Lamp",   "category": "Furniture",   "price": 5999,   "stock": 35,  "rating": 4.2},
     {"id": 43, "name": "Coffee Table Walnut",  "category": "Furniture",   "price": 10999,  "stock": 22,  "rating": 4.3},
     {"id": 44, "name": "Gaming Desk Pro",      "category": "Furniture",   "price": 21999,  "stock": 18,  "rating": 4.5},
+    {"id": 45, "name": "Limited Edition Sneaker", "category": "Clothing",  "price": 15000,  "stock": 1,   "rating": 5.0},
+    {"id": 46, "name": "Ancient Roman Coin",     "category": "Books",     "price": 50000,  "stock": 1,   "rating": 4.9},
+    {"id": 47, "name": "Prototype Drone X",     "category": "Electronics", "price": 99999,  "stock": 1,   "rating": 4.8},
+    {"id": 48, "name": "One-of-a-kind Vase",    "category": "Furniture",   "price": 12000,  "stock": 1,   "rating": 4.7},
 ]
 
 db_lock = threading.Lock()
 processed_idempotency = {}
 processed_payment = {}
 
+class PriorityMutex:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.condition = threading.Condition(self.lock)
+        self.queue = []  # List of tuples (priority, thread_id, event)
+        self.owner = None
+        self._counter = 0
+
+    def acquire(self, is_priority=False):
+        priority_val = 0 if is_priority else 1
+        with self.lock:
+            # If no one owns the lock and no one is waiting with higher/equal priority
+            if self.owner is None and not self.queue:
+                self.owner = threading.get_ident()
+                return
+
+            # Otherwise, wait in queue
+            event = threading.Event()
+            self._counter += 1
+            entry = (priority_val, self._counter, event)
+            heapq.heappush(self.queue, entry)
+            
+            while self.owner is not None or self.queue[0][2] != event:
+                self.condition.wait()
+            
+            heapq.heappop(self.queue)
+            self.owner = threading.get_ident()
+
+    def release(self):
+        with self.lock:
+            self.owner = None
+            self.condition.notify_all()
+
+priority_mutex = PriorityMutex()
 
 class RequestHandler(SimpleXMLRPCRequestHandler):
     rpc_paths = ('/RPC2',)
@@ -139,7 +179,9 @@ def reserve_stock(payload: dict) -> dict:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cart = payload.get("cart", []) if isinstance(payload, dict) else []
     idempotency_key = payload.get("idempotencyKey") if isinstance(payload, dict) else None
-    print(f"[RPC SERVER] [{timestamp}] reserve_stock() request received")
+    is_priority = payload.get("priority", False) if isinstance(payload, dict) else False
+    
+    print(f"[RPC SERVER] [{timestamp}] reserve_stock() request received | Priority: {is_priority}")
 
     if not cart:
         print("[RPC SERVER] reserve_stock() failed: empty cart")
@@ -153,8 +195,14 @@ def reserve_stock(payload: dict) -> dict:
         print(f"[RPC SERVER] idempotency replay: {idempotency_key}")
         return processed_idempotency[idempotency_key]
 
-    with db_lock:
-        print("[RPC SERVER] lock acquired for reserve_stock")
+    print(f"[RPC SERVER] Thread {threading.get_ident()} waiting for priority_lock...")
+    priority_mutex.acquire(is_priority)
+    try:
+        print(f"[RPC SERVER] lock acquired by thread {threading.get_ident()} (Priority: {is_priority})")
+        
+        # DEMO: Artificial delay to make concurrency visible
+        print("[RPC SERVER] Processing reservation (3s delay for demo)...")
+        time.sleep(3)
 
         for item in cart:
             pid = item.get("id")
@@ -204,6 +252,9 @@ def reserve_stock(payload: dict) -> dict:
 
         print("[RPC SERVER] reserve_stock() completed successfully")
         return response
+    finally:
+        priority_mutex.release()
+        print(f"[RPC SERVER] lock released by thread {threading.get_ident()}")
 
 
 def release_stock(payload: dict) -> dict:
@@ -285,7 +336,7 @@ def process_payment(payload: dict) -> dict:
     return response
 
 
-def start_server(host="localhost", port=8001):
+def start_server(host="0.0.0.0", port=8001):
     server = SimpleXMLRPCServer(
         (host, port),
         requestHandler=RequestHandler,

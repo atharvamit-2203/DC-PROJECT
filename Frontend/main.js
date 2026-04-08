@@ -26,7 +26,9 @@ const state = {
     loggedIn: false,
     name: '',
     email: ''
-  }
+  },
+  selectedPaymentMethod: 'UPI',
+  startTime: Date.now()
 };
 
 const app = document.querySelector('#app');
@@ -42,58 +44,51 @@ const PAGE_TITLES = {
 };
 
 const PRODUCT_IMAGE_MAP = {
-  1: 'https://images.unsplash.com/photo-1695048133142-1a20484d2569?auto=format&fit=crop&w=1200&q=80',
-  2: 'https://images.unsplash.com/photo-1610945415295-d9bbf067e59c?auto=format&fit=crop&w=1200&q=80',
-  3: 'https://images.unsplash.com/photo-1545127398-14699f92334b?auto=format&fit=crop&w=1200&q=80',
-  4: 'https://images.unsplash.com/photo-1517336714739-489689fd1ca8?auto=format&fit=crop&w=1200&q=80',
-  5: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&w=1200&q=80',
-  6: 'https://images.unsplash.com/photo-1592078615290-033ee584e267?auto=format&fit=crop&w=1200&q=80',
-  7: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=1200&q=80',
-  8: 'https://images.unsplash.com/photo-1541963463532-d68292c34b19?auto=format&fit=crop&w=1200&q=80',
-  9: 'https://images.unsplash.com/photo-1515879218367-8466d910aaa4?auto=format&fit=crop&w=1200&q=80',
-  10: 'https://images.unsplash.com/photo-1455885666463-6ed922aa0f4e?auto=format&fit=crop&w=1200&q=80',
-  11: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=1200&q=80',
-  12: 'https://images.unsplash.com/photo-1505798577917-a65157d3320a?auto=format&fit=crop&w=1200&q=80',
-  13: 'https://images.unsplash.com/photo-1616348436168-de43ad0db179?auto=format&fit=crop&w=1200&q=80',
-  14: 'https://images.unsplash.com/photo-1598327105666-5b89351aff97?auto=format&fit=crop&w=1200&q=80',
-  15: 'https://images.unsplash.com/photo-1496181133206-80ce9b88a853?auto=format&fit=crop&w=1200&q=80',
-  16: 'https://images.unsplash.com/photo-1561154464-82e9adf32764?auto=format&fit=crop&w=1200&q=80',
-  17: 'https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=1200&q=80',
-  18: 'https://images.unsplash.com/photo-1607853202273-797f1c22a38e?auto=format&fit=crop&w=1200&q=80',
-  19: 'https://images.unsplash.com/photo-1579586337278-3f436f25d4d6?auto=format&fit=crop&w=1200&q=80',
-  20: 'https://images.unsplash.com/photo-1589003077984-894e133dabab?auto=format&fit=crop&w=1200&q=80',
-  21: 'https://images.unsplash.com/photo-1512436991641-6745cdb1723f?auto=format&fit=crop&w=1200&q=80',
-  22: 'https://images.unsplash.com/photo-1592878940526-0214b0f374f6?auto=format&fit=crop&w=1200&q=80',
-  23: 'https://images.unsplash.com/photo-1602810318383-e386cc2a3ccf?auto=format&fit=crop&w=1200&q=80',
-  24: 'https://images.unsplash.com/photo-1551537482-f2075a1d41f2?auto=format&fit=crop&w=1200&q=80',
-  25: 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=1200&q=80',
-  26: 'https://images.unsplash.com/photo-1473966968600-fa801b869a1a?auto=format&fit=crop&w=1200&q=80',
-  27: 'https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?auto=format&fit=crop&w=1200&q=80',
-  28: 'https://images.unsplash.com/photo-1521223890158-f9f7c3d5d504?auto=format&fit=crop&w=1200&q=80',
-  29: 'https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&w=1200&q=80',
-  30: 'https://images.unsplash.com/photo-1532012197267-da84d127e765?auto=format&fit=crop&w=1200&q=80',
-  31: 'https://images.unsplash.com/photo-1516979187457-637abb4f9353?auto=format&fit=crop&w=1200&q=80',
-  32: 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?auto=format&fit=crop&w=1200&q=80',
-  33: 'https://images.unsplash.com/photo-1521587760476-6c12a4b040da?auto=format&fit=crop&w=1200&q=80',
-  34: 'https://images.unsplash.com/photo-1481627834876-b7833e8f5570?auto=format&fit=crop&w=1200&q=80',
-  35: 'https://images.unsplash.com/photo-1495446815901-a7297e633e8d?auto=format&fit=crop&w=1200&q=80',
-  36: 'https://images.unsplash.com/photo-1507842217343-583bb7270b66?auto=format&fit=crop&w=1200&q=80',
-  37: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=1200&q=80',
-  38: 'https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?auto=format&fit=crop&w=1200&q=80',
-  39: 'https://images.unsplash.com/photo-1594620302200-9a762244a156?auto=format&fit=crop&w=1200&q=80',
-  40: 'https://images.unsplash.com/photo-1616627547584-bf28cee262db?auto=format&fit=crop&w=1200&q=80',
-  41: 'https://images.unsplash.com/photo-1493666438817-866a91353ca9?auto=format&fit=crop&w=1200&q=80',
-  42: 'https://images.unsplash.com/photo-1513506003901-1e6a229e2d15?auto=format&fit=crop&w=1200&q=80',
-  43: 'https://images.unsplash.com/photo-1532372320572-cda25653a26c?auto=format&fit=crop&w=1200&q=80',
-  44: 'https://images.unsplash.com/photo-1582582429416-2d1165f1f4b1?auto=format&fit=crop&w=1200&q=80'
+  // Electronics
+  1: 'https://images.unsplash.com/photo-1695048133142-1a20484d2569?auto=format&fit=crop&w=800&q=80', // iPhone 15 Pro
+  2: 'https://images.unsplash.com/photo-1610945464075-084fb24b7591?auto=format&fit=crop&w=800&q=80', // Samsung S24
+  3: 'https://images.unsplash.com/photo-1618366712010-f10f21475c8b?auto=format&fit=crop&w=800&q=80', // Sony WH-1000XM5
+  4: 'https://images.unsplash.com/photo-1517336714739-489689fd1ca8?auto=format&fit=crop&w=800&q=80', // MacBook Air M3
+  
+  // Clothing
+  5: 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=800&q=80', // Nike Air Max
+  6: 'https://images.unsplash.com/photo-1541099649105-f69ad23f32b0?auto=format&fit=crop&w=800&q=80', // Levi's 501
+  7: 'https://images.unsplash.com/photo-1556821840-3a63f95609a7?auto=format&fit=crop&w=800&q=80', // Adidas Hoodie
+  
+  // Books
+  8: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&w=800&q=80', // Clean Code
+  9: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=800&q=80', // Python Crash Course
+  10: 'https://images.unsplash.com/photo-1532012197267-da84d127e765?auto=format&fit=crop&w=800&q=80', // JavaScript Guide
+  
+  // Furniture
+  11: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=800&q=80', // Modern Sofa
+  12: 'https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=800&q=80', // Desk Chair
+  
+  // New Limited Edition Items
+  45: 'https://images.unsplash.com/photo-1525966222134-fcfa99bcf9cf?auto=format&fit=crop&w=800&q=80', // Limited Sneaker
+  46: 'https://images.unsplash.com/photo-1589234200632-48868dac3684?auto=format&fit=crop&w=800&q=80', // Ancient Coin
+  47: 'https://images.unsplash.com/photo-1508614589041-895b88991e3e?auto=format&fit=crop&w=800&q=80', // Prototype Drone
+  48: 'https://images.unsplash.com/photo-1581783898377-1c85bf937427?auto=format&fit=crop&w=800&q=80', // One-of-a-kind Vase
 };
 
 function getProductImage(id, category) {
-  if (PRODUCT_IMAGE_MAP[id]) {
-    return PRODUCT_IMAGE_MAP[id];
+  const numericId = parseInt(id, 10);
+  if (PRODUCT_IMAGE_MAP[numericId]) {
+    return PRODUCT_IMAGE_MAP[numericId];
   }
-  const seed = `${category || 'product'}-${id}`.replace(/\s+/g, '-').toLowerCase();
-  return `https://picsum.photos/seed/${seed}/640/420`;
+  
+  // Fallback to category-based Unsplash search (more reliable than picsum)
+  const cat = (category || 'product').toLowerCase();
+  const searchMap = {
+    'electronics': 'https://images.unsplash.com/photo-1498049794561-7780e7231661?auto=format&fit=crop&w=600&q=70',
+    'books': 'https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&w=600&q=70',
+    'clothing': 'https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&w=600&q=70',
+    'furniture': 'https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=600&q=70'
+  };
+  
+  if (searchMap[cat]) return searchMap[cat];
+  
+  return `https://picsum.photos/seed/${numericId}/600/400`;
 }
 
 function nowTime() {
@@ -200,15 +195,47 @@ async function loadCategories() {
 async function loadProducts(category = 'All') {
   const queryCategory = category === 'All' ? 'ALL' : category;
   const data = await rpcGet(`/filter_by_category?category=${encodeURIComponent(queryCategory)}`);
-  state.products = (data.products || []).map((p) => ({
+  
+  const newProducts = (data.products || []).map((p) => ({
     ...p,
     image: getProductImage(p.id, p.category)
   }));
-  updateProductIndex(state.products);
-  const limit = getMaxProductPrice();
-  if (state.maxPrice === 0 || state.maxPrice > limit) {
-    state.maxPrice = limit;
+
+  // Smart Sync: Re-render if stock, price, or images changed
+  const changed = newProducts.length !== state.products.length || 
+    newProducts.some((p, i) => {
+      const old = state.products[i];
+      return !old || p.stock !== old.stock || p.image !== old.image || p.price !== old.price;
+    });
+
+  if (changed) {
+    state.products = newProducts;
+    updateProductIndex(state.products);
+    const limit = getMaxProductPrice();
+    if (state.maxPrice === 0 || state.maxPrice > limit) {
+      state.maxPrice = limit;
+    }
+    render();
   }
+}
+
+function startSynchronization() {
+  // Sync every 3 seconds
+  setInterval(async () => {
+    try {
+      // Show sync pulse
+      const indicator = document.querySelector('.sync-indicator');
+      if (indicator) indicator.classList.add('pulse');
+      
+      await loadProducts(state.selectedCategory);
+      
+      setTimeout(() => {
+        if (indicator) indicator.classList.remove('pulse');
+      }, 500);
+    } catch (err) {
+      console.warn('Sync failed:', err);
+    }
+  }, 3000);
 }
 
 async function initialize() {
@@ -221,6 +248,11 @@ async function initialize() {
     await loadProducts('All');
     state.maxPrice = getMaxProductPrice();
     logActivity('Connected to RPC server and loaded catalog', 'success');
+    
+    // Force render to ensure images catch up
+    render();
+    
+    startSynchronization();
   } catch (err) {
     state.error = err.message || String(err);
     logActivity(`Connection error: ${state.error}`, 'error');
@@ -266,25 +298,30 @@ function cartCount() {
 }
 
 function addToCart(id) {
-  const existing = state.cart.find((item) => item.id === id);
-  const product = state.productIndex.get(id);
-  const available = product ? product.stock : 0;
-  if (available <= 0) {
-    renderToast('Out of stock for this item', 'error');
-    logActivity(`Attempted to add out-of-stock item: ${product?.name || id}`, 'warning');
+  const p = productById(id);
+  if (!p || p.stock <= 0) {
+    renderToast('Out of stock', 'error');
     return;
   }
+  
+  const existing = state.cart.find((i) => i.id === id);
   if (existing) {
-    if (existing.qty + 1 > available) {
-      renderToast('Not enough stock available', 'error');
-      return;
-    }
     existing.qty += 1;
   } else {
     state.cart.push({ id, qty: 1 });
   }
-  logActivity(`Added to cart: ${product?.name || `Product ${id}`}`, 'info');
+  
+  logActivity(`Added to cart: ${p.name}`, 'info');
+  renderToast('Added to cart', 'success');
+  
   render();
+  
+  // Micro-animation for cart link
+  const cartLink = document.querySelector('[data-nav="cart"]');
+  if (cartLink) {
+    cartLink.classList.add('cart-pop');
+    setTimeout(() => cartLink.classList.remove('cart-pop'), 400);
+  }
 }
 
 function removeFromCart(id) {
@@ -305,15 +342,19 @@ async function checkout() {
     return;
   }
 
+  const isPriority = document.getElementById('high-priority')?.checked || false;
+  
   state.rpcBusy = true;
-  logActivity('Starting stock reservation via RPC', 'info');
+  logActivity(`Requesting stock reservation${isPriority ? ' (HIGH PRIORITY)' : ''}...`, 'info');
+  logActivity('Waiting for distributed system lock...', 'warning');
   render();
 
   let reservation;
   try {
     reservation = await rpcPost('/reserve_stock', {
       cart: state.cart.map((i) => ({ ...i })),
-      idempotencyKey: `idem-${Date.now()}`
+      idempotencyKey: `idem-${Date.now()}`,
+      priority: isPriority
     });
   } catch (err) {
     state.rpcBusy = false;
@@ -357,90 +398,74 @@ async function checkout() {
 }
 
 async function payNow(method = 'UPI') {
-  if (state.rpcBusy || !state.pendingPayment) {
-    return;
+  if (state.rpcBusy || !state.pendingPayment) return;
+
+  // Read form data based on method
+  let paymentDetails = {};
+  if (method === 'UPI') {
+    paymentDetails.vpa = document.getElementById('vpa-input')?.value || 'user@upi';
+  } else if (method === 'CARD') {
+    paymentDetails.cardNumber = document.getElementById('card-num')?.value || '**** **** **** 1234';
   }
 
-  // Update failure demo flags from checkboxes
+  // Update demo flags from UI
   state.failureDemo.simulatePaymentFailure = document.getElementById('fail-payment')?.checked || false;
   state.failureDemo.simulateTimeout = document.getElementById('fail-timeout')?.checked || false;
   state.failureDemo.simulateServerError = document.getElementById('fail-server')?.checked || false;
 
   state.rpcBusy = true;
-  const failureStr = state.failureDemo.simulatePaymentFailure ? ' [FAIL INJECTED]' : '';
-  logActivity(`Processing payment (${method}) for ${state.pendingPayment.orderId}${failureStr}`, 'info');
+  logActivity(`Processing ${method} payment for ${state.pendingPayment.orderId}...`, 'info');
   render();
 
-  // Handle timeout simulation on client side
-  if (state.failureDemo.simulateTimeout) {
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    state.rpcBusy = false;
-    render();
-    logActivity('Payment timeout: Server took too long to respond', 'error');
-    renderToast('Payment timeout - please try again', 'error');
-    return;
-  }
-
-  // Handle server error simulation on client side
-  if (state.failureDemo.simulateServerError) {
-    state.rpcBusy = false;
-    render();
-    logActivity('Payment error: Server encountered an error', 'error');
-    renderToast('Server error - please contact support', 'error');
-    return;
-  }
-
-  let payment;
   try {
-    payment = await rpcPost('/process_payment', {
+    if (state.failureDemo.simulateTimeout) {
+      logActivity('Simulating network timeout...', 'warning');
+      await new Promise(r => setTimeout(r, 4000));
+      throw new Error('Connection timed out');
+    }
+
+    // RPC call to process payment
+    const response = await rpcPost('/process_payment', {
       orderId: state.pendingPayment.orderId,
       amount: state.pendingPayment.amount,
-      paymentKey: `pay-${Date.now()}`,
-      method,
-      demo_fail: state.failureDemo.simulatePaymentFailure
+      method: method,
+      details: paymentDetails,
+      demo_fail: state.failureDemo.simulatePaymentFailure,
+      simulate_server_error: state.failureDemo.simulateServerError
     });
-  } catch (err) {
-    state.rpcBusy = false;
-    render();
-    logActivity(`Payment RPC error: ${err.message || String(err)}`, 'error');
-    renderToast('Payment request failed', 'error');
-    return;
-  }
 
-  const order = state.orders.find((o) => o.orderId === state.pendingPayment.orderId);
-  if (!payment.success) {
-    try {
-      await rpcPost('/release_stock', {
-        cart: state.pendingPayment.items,
-        reason: 'payment_failed'
-      });
-    } catch (err) {
-      logActivity(`Compensation release failed: ${err.message || String(err)}`, 'error');
+    if (!response.success) {
+      throw new Error(response.message);
     }
-    if (order) {
-      order.status = 'PAYMENT_FAILED_STOCK_RELEASED';
-      order.at = new Date().toLocaleTimeString();
-    }
-    logActivity(`Payment failed for ${state.pendingPayment.orderId}. Stock released.`, 'warning');
+
+    state.orders = state.orders.map(o => 
+      o.orderId === state.pendingPayment.orderId ? { ...o, status: 'CONFIRMED_PAID' } : o
+    );
+    
+    logActivity(`Payment successful! Order ${state.pendingPayment.orderId} confirmed.`, 'success');
+    renderToast('Payment successful!', 'success');
     state.pendingPayment = null;
-    await loadProducts(state.selectedCategory);
-    state.rpcBusy = false;
     goTo('orders');
+  } catch (err) {
+    logActivity(`Payment failed: ${err.message}`, 'error');
+    renderToast(err.message, 'error');
+    
+    // Auto-compensation if server error
+    if (err.message.includes('500') || state.failureDemo.simulateServerError) {
+       logActivity('Server error detected. Initiating stock recovery...', 'warning');
+       await rpcPost('/release_stock', {
+         orderId: state.pendingPayment.orderId,
+         reason: 'payment_failed'
+       });
+       state.orders = state.orders.map(o => 
+         o.orderId === state.pendingPayment.orderId ? { ...o, status: 'PAYMENT_FAILED_STOCK_RELEASED' } : o
+       );
+       state.pendingPayment = null;
+    }
+  } finally {
+    state.rpcBusy = false;
     render();
-    renderToast('Payment failed. Stock released automatically.', 'error');
-    return;
   }
-
-  if (order) {
-    order.status = 'CONFIRMED_PAID';
-    order.at = new Date().toLocaleTimeString();
-  }
-  logActivity(`Payment successful for ${state.pendingPayment.orderId}`, 'success');
-  state.pendingPayment = null;
-  state.rpcBusy = false;
-  goTo('orders');
-  render();
-  renderToast('Payment successful. Order confirmed.', 'success');
 }
 
 function productById(id) {
@@ -478,7 +503,10 @@ function renderHeader() {
   return `
     <header class="site-header fade-in">
       <div class="brand-wrap">
-        <p class="brand-kicker">DISTRIBUTED COMMERCE</p>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <p class="brand-kicker">DISTRIBUTED COMMERCE</p>
+          <span class="sync-indicator" title="Live Sync Active"></span>
+        </div>
         <h1 class="brand-title">Aster Cart</h1>
       </div>
       <nav class="nav-row">${links}</nav>
@@ -527,8 +555,8 @@ function renderShopPage() {
     .map((p) => {
       const remaining = p.stock;
       return `
-        <article class="product-card page-enter">
-          <img src="${p.image}" alt="${p.name}" class="product-image" />
+        <article class="product-card stagger-item">
+          <img src="${p.image}${p.image.includes('?') ? '&' : '?'}v=${state.startTime}" alt="${p.name}" class="product-image" loading="lazy" />
           <div class="product-body">
             <div class="meta">${p.category}</div>
             <h3>${p.name}</h3>
@@ -573,6 +601,8 @@ function renderShopPage() {
   `;
 }
 
+
+
 function renderCartPage() {
   const cartItems = state.cart.length
     ? state.cart.map((i) => {
@@ -580,7 +610,7 @@ function renderCartPage() {
       if (!p) return '';
       return `
         <li class="cart-item">
-          <img src="${p.image}" alt="${p.name}" />
+          <img src="${p.image}${p.image.includes('?') ? '&' : '?'}v=${state.startTime}" alt="${p.name}" />
           <div>
             <strong>${p.name}</strong>
             <small>${i.qty} x ${inr(p.price)}</small>
@@ -600,7 +630,15 @@ function renderCartPage() {
       <div class="panel">
         <h2>Summary</h2>
         <div class="total-row"><span>Total</span><strong>${inr(cartTotal())}</strong></div>
-        <button class="checkout" data-checkout ${state.rpcBusy ? 'disabled' : ''}>${state.rpcBusy ? 'Reserving...' : 'Place Order'}</button>
+        
+        <div class="demo-options" style="margin-bottom: 1.2rem; padding: 0.8rem; border: 1px dashed var(--accent); border-radius: 12px; background: rgba(254, 189, 105, 0.05);">
+          <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; color: var(--accent); font-size: 0.9rem; font-weight: 600;">
+            <input type="checkbox" id="high-priority" style="accent-color: var(--accent); width: 18px; height: 18px;" /> 🚀 High Priority Order (VIP)
+          </label>
+          <p style="font-size: 0.75rem; color: var(--muted); margin: 0.4rem 0 0 1.8rem;">Priority requests jump the queue if the server is busy.</p>
+        </div>
+
+        <button class="checkout" data-checkout ${state.rpcBusy ? 'disabled' : ''}>${state.rpcBusy ? 'Processing...' : 'Place Order'}</button>
       </div>
     </section>
   `;
@@ -615,33 +653,75 @@ function renderPaymentPage() {
       </section>
     `;
   }
+  const method = state.selectedPaymentMethod;
 
   return `
     <section class="payment-page page-enter">
       <div class="panel payment-panel">
-        <h2>Complete Payment</h2>
-        <p>Order: <strong>${state.pendingPayment.orderId}</strong></p>
-        <p>Amount: <strong>${inr(state.pendingPayment.amount)}</strong></p>
-        
-        <!-- Failure Simulation Options (Demo Mode) -->
-        <div class="demo-options">
-          <h3 style="font-size: 0.9rem; color: var(--accent); margin-top: 1.5rem; margin-bottom: 0.8rem;">⚡ Failure Simulation (Demo Only)</h3>
-          <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;">
-            <input type="checkbox" id="fail-payment" ${state.failureDemo.simulatePaymentFailure ? 'checked' : ''} /> Simulate Payment Failure
-          </label>
-          <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;">
-            <input type="checkbox" id="fail-timeout" ${state.failureDemo.simulateTimeout ? 'checked' : ''} /> Simulate Network Timeout
-          </label>
-          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;">
-            <input type="checkbox" id="fail-server" ${state.failureDemo.simulateServerError ? 'checked' : ''} /> Simulate Server Error
-          </label>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <h2 style="margin: 0;">Payment</h2>
+          <span class="pill" style="background: var(--surface-soft);">${state.pendingPayment.orderId}</span>
         </div>
         
-        <div class="method-grid" style="margin-top: 1.5rem;">
-          <button class="pay-btn" data-pay="UPI" ${state.rpcBusy ? 'disabled' : ''}>Pay with UPI</button>
-          <button class="pay-btn" data-pay="CARD" ${state.rpcBusy ? 'disabled' : ''}>Pay with Card</button>
-          <button class="pay-btn" data-pay="COD" ${state.rpcBusy ? 'disabled' : ''}>Cash on Delivery</button>
+        <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 1.2rem;">Total Amount: <strong style="color: var(--ink); font-size: 1.1rem;">${inr(state.pendingPayment.amount)}</strong></p>
+
+        <div class="payment-tabs" style="display: flex; gap: 0.5rem; margin-bottom: 1.5rem; background: rgba(0,0,0,0.2); padding: 0.3rem; border-radius: 12px;">
+          <button class="nav-link ${method === 'UPI' ? 'active' : ''}" style="flex: 1; border: 0;" onclick="state.selectedPaymentMethod = 'UPI'; render();">UPI</button>
+          <button class="nav-link ${method === 'CARD' ? 'active' : ''}" style="flex: 1; border: 0;" onclick="state.selectedPaymentMethod = 'CARD'; render();">Card</button>
+          <button class="nav-link ${method === 'COD' ? 'active' : ''}" style="flex: 1; border: 0;" onclick="state.selectedPaymentMethod = 'COD'; render();">COD</button>
         </div>
+
+        <div class="payment-form-wrap" style="min-height: 200px;">
+          ${method === 'UPI' ? `
+            <div class="fade-in">
+              <label style="display: block; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.85rem;">Enter UPI ID (VPA)</label>
+              <input type="text" id="vpa-input" placeholder="username@bank" style="width: 100%; padding: 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: #fff; margin-bottom: 1rem;" />
+              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <span class="chip" style="font-size: 0.75rem; cursor: pointer;" onclick="document.getElementById('vpa-input').value='success@okaxis';">success@okaxis</span>
+                <span class="chip" style="font-size: 0.75rem; cursor: pointer;" onclick="document.getElementById('vpa-input').value='demo@okicici';">demo@okicici</span>
+              </div>
+            </div>
+          ` : method === 'CARD' ? `
+            <div class="fade-in">
+              <label style="display: block; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.85rem;">Card Number</label>
+              <input type="text" id="card-num" placeholder="XXXX XXXX XXXX XXXX" style="width: 100%; padding: 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: #fff; margin-bottom: 1rem;" />
+              <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+                <div style="flex: 2;">
+                   <label style="display: block; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.85rem;">Expiry</label>
+                   <input type="text" placeholder="MM/YY" style="width: 100%; padding: 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: #fff;" />
+                </div>
+                <div style="flex: 1;">
+                   <label style="display: block; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.85rem;">CVV</label>
+                   <input type="password" placeholder="***" style="width: 100%; padding: 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: #fff;" />
+                </div>
+              </div>
+              <button class="ghost-btn" style="width: 100%; font-size: 0.8rem;" onclick="document.getElementById('card-num').value='4242 4242 4242 4242';">Fill Test Card</button>
+            </div>
+          ` : `
+            <div class="fade-in" style="text-align: center; padding: 2rem 0;">
+              <p style="color: var(--muted);">Pay cash when your order is delivered.</p>
+            </div>
+          `}
+        </div>
+
+        <div class="demo-options" style="margin-top: 2rem; padding: 1rem; border: 1px dashed var(--warn); border-radius: 12px; background: rgba(216, 160, 74, 0.05);">
+          <h3 style="font-size: 0.85rem; color: var(--warn); margin-bottom: 0.8rem; text-transform: uppercase;">⚠️ Failure Simulation</h3>
+          <div style="display: grid; gap: 0.6rem;">
+            <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--muted);">
+              <input type="checkbox" id="fail-payment" ${state.failureDemo.simulatePaymentFailure ? 'checked' : ''} /> Simulate Insufficient Funds
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--muted);">
+              <input type="checkbox" id="fail-timeout" ${state.failureDemo.simulateTimeout ? 'checked' : ''} /> Simulate Network Timeout (4s)
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--muted);">
+              <input type="checkbox" id="fail-server" ${state.failureDemo.simulateServerError ? 'checked' : ''} /> Simulate Server Outage (Distributed Crash)
+            </label>
+          </div>
+        </div>
+
+        <button class="cta" style="width: 100%; margin-top: 1.5rem; font-size: 1.1rem; padding: 1rem;" onclick="payNow('${method}')" ${state.rpcBusy ? 'disabled' : ''}>
+          ${state.rpcBusy ? 'Verifying...' : `Pay ${inr(state.pendingPayment.amount)} Now`}
+        </button>
       </div>
     </section>
   `;
@@ -662,11 +742,11 @@ function renderProductPage() {
   return `
     <section class="product-page page-enter">
       <div class="panel product-gallery">
-        <img src="${p.image}" alt="${p.name}" class="detail-main-image" />
+        <img src="${p.image}${p.image.includes('?') ? '&' : '?'}v=${state.startTime}" alt="${p.name}" class="detail-main-image" />
         <div class="thumb-row">
-          <img src="${getProductImage(p.id, `${p.category}-a`)}" alt="${p.name} view 1" />
-          <img src="${getProductImage(p.id, `${p.category}-b`)}" alt="${p.name} view 2" />
-          <img src="${getProductImage(p.id, `${p.category}-c`)}" alt="${p.name} view 3" />
+          <img src="${getProductImage(p.id, `${p.category}-a`)}&v=${state.startTime}" alt="${p.name} view 1" />
+          <img src="${getProductImage(p.id, `${p.category}-b`)}&v=${state.startTime}" alt="${p.name} view 2" />
+          <img src="${getProductImage(p.id, `${p.category}-c`)}&v=${state.startTime}" alt="${p.name} view 3" />
         </div>
       </div>
       <div class="panel product-info">
