@@ -1,5 +1,6 @@
 import './styles.css';
 
+// ─── STATE ────────────────────────────────────────────────────────────────────
 const state = {
   products: [],
   productIndex: new Map(),
@@ -22,146 +23,324 @@ const state = {
     simulateTimeout: false,
     simulateServerError: false
   },
-  auth: {
-    loggedIn: false,
-    name: '',
-    email: ''
-  },
+  auth: { loggedIn: false, name: '', email: '' },
   selectedPaymentMethod: 'UPI',
-  startTime: Date.now()
+  startTime: Date.now(),
+  backendRoute: 'primary',
+  sliderValue: 0,
+  toasts: []
 };
 
 const app = document.querySelector('#app');
+let scrollObserver = null;
+let searchDebounceTimer = null;
+let syncInFlight = false;
+const LOCAL_STATE_KEY = 'dc_frontend_state_v1';
 
 const PAGE_TITLES = {
-  home: 'Home',
-  shop: 'Shop',
-  cart: 'Cart',
-  payment: 'Payment',
-  orders: 'Orders',
-  activity: 'Activity',
-  account: 'Account'
+  home: 'Home', shop: 'Shop', cart: 'Cart',
+  payment: 'Payment', orders: 'Orders', activity: 'Activity', account: 'Account'
 };
 
-const PRODUCT_IMAGE_MAP = {
-  // Electronics
-  1: 'https://images.unsplash.com/photo-1695048133142-1a20484d2569?auto=format&fit=crop&w=800&q=80', // iPhone 15 Pro
-  2: 'https://images.unsplash.com/photo-1610945464075-084fb24b7591?auto=format&fit=crop&w=800&q=80', // Samsung S24
-  3: 'https://images.unsplash.com/photo-1618366712010-f10f21475c8b?auto=format&fit=crop&w=800&q=80', // Sony WH-1000XM5
-  4: 'https://images.unsplash.com/photo-1517336714739-489689fd1ca8?auto=format&fit=crop&w=800&q=80', // MacBook Air M3
-  
-  // Clothing
-  5: 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=800&q=80', // Nike Air Max
-  6: 'https://images.unsplash.com/photo-1541099649105-f69ad23f32b0?auto=format&fit=crop&w=800&q=80', // Levi's 501
-  7: 'https://images.unsplash.com/photo-1556821840-3a63f95609a7?auto=format&fit=crop&w=800&q=80', // Adidas Hoodie
-  
-  // Books
-  8: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&w=800&q=80', // Clean Code
-  9: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=800&q=80', // Python Crash Course
-  10: 'https://images.unsplash.com/photo-1532012197267-da84d127e765?auto=format&fit=crop&w=800&q=80', // JavaScript Guide
-  
-  // Furniture
-  11: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=800&q=80', // Modern Sofa
-  12: 'https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=800&q=80', // Desk Chair
-  
-  // New Limited Edition Items
-  45: 'https://images.unsplash.com/photo-1525966222134-fcfa99bcf9cf?auto=format&fit=crop&w=800&q=80', // Limited Sneaker
-  46: 'https://images.unsplash.com/photo-1589234200632-48868dac3684?auto=format&fit=crop&w=800&q=80', // Ancient Coin
-  47: 'https://images.unsplash.com/photo-1508614589041-895b88991e3e?auto=format&fit=crop&w=800&q=80', // Prototype Drone
-  48: 'https://images.unsplash.com/photo-1581783898377-1c85bf937427?auto=format&fit=crop&w=800&q=80', // One-of-a-kind Vase
+const PAGE_ICONS = {
+  home: '⌂', shop: '◈', cart: '◳', payment: '◉',
+  orders: '≡', activity: '◎', account: '◯'
 };
+
+// ─── PRODUCT IMAGES ────────────────────────────────────────────────────────────
+// Comprehensive Unsplash image map — keyed by product ID, with per-category pools
+const PRODUCT_IMAGE_POOLS = {
+  electronics: [
+    'https://images.unsplash.com/photo-1695048133142-1a20484d2569?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1610945464075-084fb24b7591?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1517336714739-489689fd1ca8?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1531297484001-80022131f5a1?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1574920162043-b872873f37b8?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1548036328-c9fa89d128fa?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1585771724684-38269d6639fd?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1601524909162-ae8725290836?auto=format&fit=crop&w=800&q=80',
+  ],
+  books: [
+    'https://images.unsplash.com/photo-1532012197267-da84d127e765?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1481627834876-b7833e8f5570?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1495446815901-a7297e633e8d?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?auto=format&fit=crop&w=800&q=80',
+  ],
+  clothing: [
+    'https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1541099649105-f69ad23f32b0?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1556821840-3a63f95609a7?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1516762689617-e1cffcef479d?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1467043237213-65f2da53396f?auto=format&fit=crop&w=800&q=80',
+  ],
+  furniture: [
+    'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1550226891-ef816aed4a98?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1567538096630-e0c55bd6374c?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1586023492125-27b2c045efd7?auto=format&fit=crop&w=800&q=80',
+  ],
+  sports: [
+    'https://images.unsplash.com/photo-1461897104016-0b3b00cc81ee?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1517649763962-0c623066013b?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1552674605-db6ffd4facb5?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?auto=format&fit=crop&w=800&q=80',
+  ],
+  food: [
+    'https://images.unsplash.com/photo-1490645935967-10de6ba17061?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1498837167922-ddd27525d352?auto=format&fit=crop&w=800&q=80',
+  ],
+  default: [
+    'https://images.unsplash.com/photo-1441986300917-64674bd600d8?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1472851294608-062f824d29cc?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?auto=format&fit=crop&w=800&q=80',
+  ]
+};
+
+// Cache so the same product always gets the same image
+const _imageCache = new Map();
 
 function getProductImage(id, category) {
-  const numericId = parseInt(id, 10);
-  if (PRODUCT_IMAGE_MAP[numericId]) {
-    return PRODUCT_IMAGE_MAP[numericId];
-  }
-  
-  // Fallback to category-based Unsplash search (more reliable than picsum)
-  const cat = (category || 'product').toLowerCase();
-  const searchMap = {
-    'electronics': 'https://images.unsplash.com/photo-1498049794561-7780e7231661?auto=format&fit=crop&w=600&q=70',
-    'books': 'https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&w=600&q=70',
-    'clothing': 'https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&w=600&q=70',
-    'furniture': 'https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=600&q=70'
-  };
-  
-  if (searchMap[cat]) return searchMap[cat];
-  
-  return `https://picsum.photos/seed/${numericId}/600/400`;
+  const key = `${id}-${category}`;
+  if (_imageCache.has(key)) return _imageCache.get(key);
+
+  const n = parseInt(id, 10);
+  // Normalise category name to match pool keys
+  const cat = (category || '').toLowerCase()
+    .replace(/[^a-z]/g, '')   // strip hyphens, spaces, etc.
+    .split('').slice(0, 10).join(''); // max 10 chars
+
+  const poolKey = Object.keys(PRODUCT_IMAGE_POOLS).find(k => cat.startsWith(k)) || 'default';
+  const pool = PRODUCT_IMAGE_POOLS[poolKey];
+  const url = pool[n % pool.length];
+
+  _imageCache.set(key, url);
+  return url;
 }
 
-function nowTime() {
-  return new Date().toLocaleTimeString();
+// ─── HELPERS ───────────────────────────────────────────────────────────────────
+const nowTime = () => new Date().toLocaleTimeString();
+
+function inr(v) {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency', currency: 'INR', maximumFractionDigits: 0
+  }).format(v);
 }
 
-function logActivity(message, type = 'info') {
-  state.activity.unshift({
-    id: `${Date.now()}-${Math.random()}`,
-    message,
-    type,
-    at: nowTime()
-  });
-  if (state.activity.length > 50) {
-    state.activity = state.activity.slice(0, 50);
-  }
+function stars(r) {
+  const full = Math.floor(r), half = r % 1 >= 0.5 ? 1 : 0;
+  return '★'.repeat(full) + (half ? '½' : '') + '☆'.repeat(5 - full - half);
 }
 
-function goTo(page) {
-  if (!PAGE_TITLES[page] && page !== 'product') return;
-  state.page = page;
-  if (page === 'product' && state.activeProductId) {
-    window.location.hash = `product-${state.activeProductId}`;
-  } else {
-    window.location.hash = page;
-  }
+function cartCount()  { return state.cart.reduce((s, i) => s + i.qty, 0); }
+function cartTotal()  {
+  return state.cart.reduce((s, i) => {
+    const p = productById(i.id);
+    return s + (p ? p.price * i.qty : 0);
+  }, 0);
+}
+
+function productById(id) { return state.productIndex.get(id); }
+
+function getMaxProductPrice() {
+  return state.products.length ? Math.max(...state.products.map(p => p.price)) : 0;
+}
+
+// Highlight query matches inside text, returns HTML string
+function highlightMatch(text, query) {
+  if (!query) return text;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`(${escaped})`, 'gi'), '<mark>$1</mark>');
+}
+
+function filteredProducts() {
+  const q = state.searchQuery.trim().toLowerCase();
+  let items = [...state.products];
+  if (q) items = items.filter(p => p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q));
+  if (state.maxPrice > 0) items = items.filter(p => p.price <= state.maxPrice);
+  if (state.sortBy === 'price-asc')    items.sort((a, b) => a.price - b.price);
+  if (state.sortBy === 'price-desc')   items.sort((a, b) => b.price - a.price);
+  if (state.sortBy === 'rating-desc')  items.sort((a, b) => b.rating - a.rating);
+  return items;
+}
+
+// ─── TOAST SYSTEM ──────────────────────────────────────────────────────────────
+const TOAST_ICONS = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠' };
+
+function renderToast(message, type = 'info') {
+  const id = `${Date.now()}-${Math.random()}`;
+  state.toasts.push({ id, message, type });
+  setTimeout(() => {
+    const el = document.querySelector(`[data-toast="${id}"]`);
+    if (el) {
+      el.style.animation = 'toastOut 0.3s cubic-bezier(0.65,0,0.35,1) forwards';
+      setTimeout(() => { state.toasts = state.toasts.filter(t => t.id !== id); render(); }, 280);
+    } else {
+      state.toasts = state.toasts.filter(t => t.id !== id); render();
+    }
+  }, 4500);
   render();
 }
 
+function closeToast(id) {
+  const el = document.querySelector(`[data-toast="${id}"]`);
+  if (el) {
+    el.style.animation = 'toastOut 0.25s cubic-bezier(0.65,0,0.35,1) forwards';
+    setTimeout(() => { state.toasts = state.toasts.filter(t => t.id !== id); render(); }, 240);
+  } else {
+    state.toasts = state.toasts.filter(t => t.id !== id); render();
+  }
+}
+
+function renderToasts() {
+  if (!state.toasts.length) return '';
+  return `
+    <style>
+      @keyframes toastOut {
+        from { opacity: 1; transform: translateX(0) scale(1); }
+        to   { opacity: 0; transform: translateX(48px) scale(0.88); }
+      }
+    </style>
+    <div class="toast-container">
+      ${state.toasts.map(t => `
+        <div class="toast toast-${t.type}" data-toast="${t.id}">
+          <span class="toast-icon">${TOAST_ICONS[t.type] || 'ℹ'}</span>
+          <span>${t.message}</span>
+          <button class="toast-close" onclick="closeToast('${t.id}')">×</button>
+        </div>`).join('')}
+    </div>`;
+}
+
+// ─── ACTIVITY LOG ──────────────────────────────────────────────────────────────
+function logActivity(message, type = 'info') {
+  state.activity.unshift({ id: `${Date.now()}-${Math.random()}`, message, type, at: nowTime() });
+  if (state.activity.length > 60) state.activity = state.activity.slice(0, 60);
+}
+
+// ─── NAVIGATION ────────────────────────────────────────────────────────────────
+function goTo(page) {
+  if (!PAGE_TITLES[page] && page !== 'product') return;
+
+  if (!state.auth.loggedIn && page !== 'account') {
+    renderToast('Please sign in first', 'warning');
+    page = 'account';
+  }
+
+  const shell = document.querySelector('.page-shell');
+  const doNav = () => {
+    state.page = page;
+    window.location.hash = page === 'product' && state.activeProductId
+      ? `product-${state.activeProductId}` : page;
+    persistLocalState();
+    render();
+    requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  };
+  if (shell) {
+    doNav();
+  } else {
+    doNav();
+  }
+}
+
 function syncPageFromHash() {
+  if (!state.auth.loggedIn) {
+    state.page = 'account';
+    return;
+  }
+
   const hash = (window.location.hash || '#home').replace('#', '').toLowerCase();
   if (hash.startsWith('product-')) {
     const pid = Number(hash.replace('product-', ''));
-    if (!Number.isNaN(pid) && pid > 0) {
-      state.activeProductId = pid;
-      state.page = 'product';
-      return;
-    }
+    if (!isNaN(pid) && pid > 0) { state.activeProductId = pid; state.page = 'product'; return; }
   }
   state.page = PAGE_TITLES[hash] ? hash : 'home';
 }
 
-function getMaxProductPrice() {
-  if (state.products.length === 0) return 0;
-  return Math.max(...state.products.map((p) => p.price));
+function openProduct(id) { state.activeProductId = id; goTo('product'); }
+
+// ─── LOCAL PERSISTENCE ───────────────────────────────────────────────────────
+function getPersistedSnapshot() {
+  return {
+    auth: state.auth,
+    cart: state.cart,
+    orders: state.orders,
+    pendingPayment: state.pendingPayment,
+    activity: state.activity,
+    selectedPaymentMethod: state.selectedPaymentMethod,
+    page: state.page
+  };
 }
 
-function openProduct(id) {
-  state.activeProductId = id;
-  goTo('product');
+function persistLocalState() {
+  try {
+    localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(getPersistedSnapshot()));
+  } catch (e) {
+    console.warn('Failed to persist local state:', e);
+  }
 }
 
+function restoreLocalState() {
+  try {
+    const raw = localStorage.getItem(LOCAL_STATE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+
+    if (saved?.auth && typeof saved.auth === 'object') {
+      state.auth = {
+        loggedIn: Boolean(saved.auth.loggedIn),
+        name: String(saved.auth.name || ''),
+        email: String(saved.auth.email || '')
+      };
+    }
+    if (Array.isArray(saved?.cart)) state.cart = saved.cart;
+    if (Array.isArray(saved?.orders)) state.orders = saved.orders;
+    if (Array.isArray(saved?.activity)) state.activity = saved.activity.slice(0, 60);
+    if (saved?.pendingPayment && typeof saved.pendingPayment === 'object') state.pendingPayment = saved.pendingPayment;
+    if (typeof saved?.selectedPaymentMethod === 'string') state.selectedPaymentMethod = saved.selectedPaymentMethod;
+
+    // Always gate by auth; account must be the first screen for guests.
+    if (!state.auth.loggedIn) {
+      state.page = 'account';
+    } else if (saved?.page && (PAGE_TITLES[saved.page] || saved.page === 'product')) {
+      state.page = saved.page;
+    }
+  } catch (e) {
+    console.warn('Failed to restore local state:', e);
+  }
+}
+
+// ─── AUTH ──────────────────────────────────────────────────────────────────────
 function loginUser(name, email) {
-  state.auth.loggedIn = true;
-  state.auth.name = name.trim();
-  state.auth.email = email.trim();
-  logActivity(`User signed in: ${state.auth.name}`, 'success');
+  state.auth = { loggedIn: true, name: name.trim(), email: email.trim() };
+  logActivity(`Signed in as ${state.auth.name}`, 'success');
+  persistLocalState();
 }
 
 function logoutUser() {
-  const name = state.auth.name || 'User';
-  state.auth.loggedIn = false;
-  state.auth.name = '';
-  state.auth.email = '';
+  const name = state.auth.name;
+  state.auth = { loggedIn: false, name: '', email: '' };
+  state.cart = [];
+  state.pendingPayment = null;
   logActivity(`${name} signed out`, 'info');
+  persistLocalState();
 }
 
+// ─── RPC CALLS ────────────────────────────────────────────────────────────────
 async function rpcGet(path) {
   const res = await fetch(`/api/rpc${path}`);
   const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.message || 'RPC request failed');
-  }
+  if (!res.ok) throw new Error(data.message || 'RPC request failed');
+  const route = res.headers.get('x-rpc-upstream');
+  if (route) state.backendRoute = route;
   return data;
 }
 
@@ -172,19 +351,14 @@ async function rpcPost(path, payload) {
     body: JSON.stringify(payload)
   });
   const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.message || 'RPC request failed');
-  }
+  if (!res.ok) throw new Error(data.message || 'RPC request failed');
+  const route = res.headers.get('x-rpc-upstream');
+  if (route) state.backendRoute = route;
   return data;
 }
 
 function updateProductIndex(products) {
-  products.forEach((p) => {
-    state.productIndex.set(p.id, {
-      ...p,
-      image: getProductImage(p.id, p.category)
-    });
-  });
+  products.forEach(p => state.productIndex.set(p.id, { ...p, image: getProductImage(p.id, p.category) }));
 }
 
 async function loadCategories() {
@@ -195,206 +369,225 @@ async function loadCategories() {
 async function loadProducts(category = 'All') {
   const queryCategory = category === 'All' ? 'ALL' : category;
   const data = await rpcGet(`/filter_by_category?category=${encodeURIComponent(queryCategory)}`);
-  
-  const newProducts = (data.products || []).map((p) => ({
-    ...p,
-    image: getProductImage(p.id, p.category)
-  }));
-
-  // Smart Sync: Re-render if stock, price, or images changed
-  const changed = newProducts.length !== state.products.length || 
-    newProducts.some((p, i) => {
-      const old = state.products[i];
-      return !old || p.stock !== old.stock || p.image !== old.image || p.price !== old.price;
-    });
-
+  const newProducts = (data.products || []).map(p => ({ ...p, image: getProductImage(p.id, p.category) }));
+  const changed = newProducts.length !== state.products.length ||
+    newProducts.some((p, i) => { const o = state.products[i]; return !o || p.stock !== o.stock || p.price !== o.price; });
   if (changed) {
     state.products = newProducts;
     updateProductIndex(state.products);
     const limit = getMaxProductPrice();
-    if (state.maxPrice === 0 || state.maxPrice > limit) {
-      state.maxPrice = limit;
+    if (state.maxPrice === 0 || state.maxPrice > limit) state.maxPrice = limit;
+    if (!state.sliderValue || state.sliderValue > limit)  state.sliderValue = limit;
+
+    // Avoid rebuilding the entire page on every sync tick.
+    if (state.page === 'shop') {
+      _updateCatalogOnly();
+    } else if (state.page === 'product' || state.page === 'cart') {
+      render();
     }
-    render();
   }
 }
 
 function startSynchronization() {
-  // Sync every 3 seconds
   setInterval(async () => {
+    if (syncInFlight || document.hidden) return;
+    syncInFlight = true;
     try {
-      // Show sync pulse
-      const indicator = document.querySelector('.sync-indicator');
-      if (indicator) indicator.classList.add('pulse');
-      
+      const ind = document.querySelector('.sync-indicator');
+      if (ind) ind.classList.add('pulse');
       await loadProducts(state.selectedCategory);
-      
-      setTimeout(() => {
-        if (indicator) indicator.classList.remove('pulse');
-      }, 500);
-    } catch (err) {
-      console.warn('Sync failed:', err);
+      setTimeout(() => { if (ind) ind.classList.remove('pulse'); }, 600);
+    } catch (e) {
+      console.warn('Sync failed:', e);
+    } finally {
+      syncInFlight = false;
     }
-  }, 3000);
+  }, 7000);
+}
+
+// ─── SCROLL OBSERVER ───────────────────────────────────────────────────────────
+function initScrollObserver() {
+  if (scrollObserver) scrollObserver.disconnect();
+
+  scrollObserver = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        const siblings = [...(e.target.parentElement?.querySelectorAll('.scroll-fade-item') || [])];
+        const idx = siblings.indexOf(e.target);
+        e.target.style.transitionDelay = `${Math.min(idx * 0.055, 0.4)}s`;
+        e.target.classList.add('in-view');
+        scrollObserver.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.07, rootMargin: '0px 0px -40px 0px' });
+
+  document.querySelectorAll('.scroll-fade-item').forEach(el => {
+    const rect = el.getBoundingClientRect();
+    if (rect.top < window.innerHeight && rect.bottom > 0) {
+      el.style.transitionDelay = '0s';
+      el.classList.add('in-view');
+    } else {
+      scrollObserver.observe(el);
+    }
+  });
+}
+
+// ─── IMAGE LAZY LOAD WITH FADE-IN ──────────────────────────────────────────────
+function initImageFadeIn() {
+  document.querySelectorAll('.product-image, .detail-main-image, .thumb-row img').forEach(img => {
+    if (img.complete && img.naturalWidth > 0) {
+      img.classList.add('loaded');
+    } else {
+      img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
+      img.addEventListener('error', () => {
+        // Fallback to a reliable placeholder on error
+        const seed = Math.abs(img.src.length * 7 % 100);
+        img.src = `https://picsum.photos/seed/${seed}/800/600`;
+        img.classList.add('loaded');
+      }, { once: true });
+    }
+  });
+}
+
+// ─── CARD TILT ─────────────────────────────────────────────────────────────────
+function initCardTilt() {
+  document.querySelectorAll('.product-card, .feature-card').forEach(card => {
+    let raf = null;
+    card.addEventListener('mousemove', e => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const rect = card.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const dx = (e.clientX - cx) / (rect.width / 2);
+        const dy = (e.clientY - cy) / (rect.height / 2);
+        const tiltX = dy * -7;
+        const tiltY = dx * 7;
+        const shine = `radial-gradient(circle at ${((e.clientX - rect.left) / rect.width * 100).toFixed(1)}% ${((e.clientY - rect.top) / rect.height * 100).toFixed(1)}%, rgba(255,255,255,0.08) 0%, transparent 60%)`;
+        card.style.transform = `perspective(800px) rotateX(${tiltX}deg) rotateY(${tiltY}deg) translateY(-10px) scale(1.018)`;
+        if (!card.querySelector('.card-shine')) {
+          const shineEl = document.createElement('div');
+          shineEl.className = 'card-shine';
+          shineEl.style.cssText = 'position:absolute;inset:0;border-radius:inherit;pointer-events:none;transition:background 0.1s;z-index:1;';
+          card.appendChild(shineEl);
+        }
+        const s = card.querySelector('.card-shine');
+        if (s) s.style.background = shine;
+      });
+    });
+    card.addEventListener('mouseleave', () => {
+      if (raf) cancelAnimationFrame(raf);
+      card.style.transform = '';
+      card.style.transition = 'transform 0.55s cubic-bezier(0.175,0.885,0.32,1.275), box-shadow 0.5s ease';
+      const s = card.querySelector('.card-shine');
+      if (s) s.style.background = 'none';
+      setTimeout(() => { card.style.transition = ''; }, 550);
+    });
+  });
+}
+
+// ─── ANIMATED COUNTER ──────────────────────────────────────────────────────────
+function animateCounters() {
+  document.querySelectorAll('[data-counter]').forEach(el => {
+    const target = parseInt(el.dataset.counter, 10);
+    const duration = 900;
+    const start = performance.now();
+    const ease = t => 1 - Math.pow(1 - t, 3);
+    const tick = now => {
+      const elapsed = now - start;
+      const progress = Math.min(elapsed / duration, 1);
+      el.textContent = Math.round(target * ease(progress));
+      if (progress < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
 }
 
 async function initialize() {
   try {
-    state.loading = true;
-    state.error = '';
-    syncPageFromHash();
-    render();
+    state.loading = true; state.error = '';
+    restoreLocalState();
+    syncPageFromHash(); render();
     await loadCategories();
     await loadProducts('All');
     state.maxPrice = getMaxProductPrice();
-    logActivity('Connected to RPC server and loaded catalog', 'success');
-    
-    // Force render to ensure images catch up
+    state.sliderValue = state.maxPrice;
+    if (state.orders.length) {
+      logActivity(`Recovered ${state.orders.length} stored order(s) from local session`, 'info');
+    }
+    logActivity('Connected to RPC server — catalog loaded', 'success');
+    persistLocalState();
     render();
-    
     startSynchronization();
   } catch (err) {
     state.error = err.message || String(err);
     logActivity(`Connection error: ${state.error}`, 'error');
   } finally {
-    state.loading = false;
-    render();
+    state.loading = false; render();
   }
 }
 
-function inr(value) {
-  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
-}
-
-function stars(rating) {
-  const full = Math.floor(rating);
-  return '★'.repeat(full) + '☆'.repeat(5 - full);
-}
-
-function categoryList() {
-  return state.categories;
-}
-
-function filteredProducts() {
-  const q = state.searchQuery.trim().toLowerCase();
-  let items = [...state.products];
-
-  if (q) {
-    items = items.filter((p) => p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q));
-  }
-
-  if (state.maxPrice > 0) {
-    items = items.filter((p) => p.price <= state.maxPrice);
-  }
-
-  if (state.sortBy === 'price-asc') items.sort((a, b) => a.price - b.price);
-  if (state.sortBy === 'price-desc') items.sort((a, b) => b.price - a.price);
-  if (state.sortBy === 'rating-desc') items.sort((a, b) => b.rating - a.rating);
-  return items;
-}
-
-function cartCount() {
-  return state.cart.reduce((sum, item) => sum + item.qty, 0);
-}
-
+// ─── CART ACTIONS ──────────────────────────────────────────────────────────────
 function addToCart(id) {
   const p = productById(id);
-  if (!p || p.stock <= 0) {
-    renderToast('Out of stock', 'error');
-    return;
-  }
-  
-  const existing = state.cart.find((i) => i.id === id);
-  if (existing) {
-    existing.qty += 1;
-  } else {
-    state.cart.push({ id, qty: 1 });
-  }
-  
+  if (!p || p.stock <= 0) { renderToast('Out of stock', 'error'); return; }
+  const ex = state.cart.find(i => i.id === id);
+  if (ex) ex.qty += 1; else state.cart.push({ id, qty: 1 });
   logActivity(`Added to cart: ${p.name}`, 'info');
-  renderToast('Added to cart', 'success');
-  
+  renderToast(`${p.name} added to cart`, 'success');
+  persistLocalState();
   render();
-  
-  // Micro-animation for cart link
   const cartLink = document.querySelector('[data-nav="cart"]');
-  if (cartLink) {
-    cartLink.classList.add('cart-pop');
-    setTimeout(() => cartLink.classList.remove('cart-pop'), 400);
-  }
+  if (cartLink) { cartLink.classList.add('cart-pop'); setTimeout(() => cartLink.classList.remove('cart-pop'), 600); }
 }
 
 function removeFromCart(id) {
   const p = productById(id);
-  state.cart = state.cart.filter((i) => i.id !== id);
-  logActivity(`Removed from cart: ${p?.name || `Product ${id}`}`, 'info');
+  state.cart = state.cart.filter(i => i.id !== id);
+  logActivity(`Removed: ${p?.name || `Product ${id}`}`, 'info');
+  persistLocalState();
   render();
 }
 
+// ─── CHECKOUT / PAYMENT ───────────────────────────────────────────────────────
 async function checkout() {
-  if (state.rpcBusy) {
-    renderToast('RPC in progress. Please wait.', 'info');
-    return;
-  }
-
-  if (state.cart.length === 0) {
-    renderToast('Your cart is empty', 'error');
-    return;
-  }
-
+  if (!state.auth.loggedIn) { renderToast('Please sign in first', 'warning'); goTo('account'); return; }
+  if (state.rpcBusy) { renderToast('RPC in progress. Please wait.', 'info'); return; }
+  if (!state.cart.length) { renderToast('Your cart is empty', 'error'); return; }
   const isPriority = document.getElementById('high-priority')?.checked || false;
-  
   state.rpcBusy = true;
-  logActivity(`Requesting stock reservation${isPriority ? ' (HIGH PRIORITY)' : ''}...`, 'info');
-  logActivity('Waiting for distributed system lock...', 'warning');
+  logActivity(`Requesting stock reservation${isPriority ? ' (HIGH PRIORITY)' : ''}…`, 'info');
+  logActivity('Waiting for distributed lock…', 'warning');
   render();
-
   let reservation;
   try {
     reservation = await rpcPost('/reserve_stock', {
-      cart: state.cart.map((i) => ({ ...i })),
+      cart: state.cart.map(i => ({ ...i })),
       idempotencyKey: `idem-${Date.now()}`,
       priority: isPriority
     });
   } catch (err) {
-    state.rpcBusy = false;
-    render();
-    logActivity(`Reservation error: ${err.message || String(err)}`, 'error');
-    renderToast('Reservation request failed', 'error');
-    return;
+    state.rpcBusy = false; render();
+    logActivity(`Reservation error: ${err.message}`, 'error');
+    renderToast('Reservation request failed', 'error'); return;
   }
-
   if (!reservation.success) {
-    state.rpcBusy = false;
-    render();
+    state.rpcBusy = false; render();
     logActivity(`Reservation failed: ${reservation.message}`, 'error');
-    renderToast(reservation.message, 'error');
-    return;
+    renderToast(reservation.message, 'error'); return;
   }
-
   const orderId = `ORD-${Date.now().toString().slice(-6)}`;
-  const orderItems = state.cart.map((i) => ({ ...i }));
-  state.pendingPayment = {
-    orderId,
-    items: orderItems,
-    amount: cartTotal(),
-    createdAt: new Date().toLocaleTimeString(),
-  };
-
-  state.orders.unshift({
-    orderId,
-    status: 'AWAITING_PAYMENT',
-    at: state.pendingPayment.createdAt,
-    items: orderItems,
-  });
-
+  const orderItems = state.cart.map(i => ({ ...i }));
+  state.pendingPayment = { orderId, items: orderItems, amount: cartTotal(), createdAt: new Date().toLocaleTimeString() };
+  state.orders.unshift({ orderId, status: 'AWAITING_PAYMENT', at: state.pendingPayment.createdAt, items: orderItems });
   state.cart = [];
   await loadProducts(state.selectedCategory);
   state.rpcBusy = false;
+  persistLocalState();
   goTo('payment');
   logActivity(`Stock reserved for ${orderId}. Awaiting payment.`, 'success');
   render();
-  renderToast(`Order ${orderId} reserved. Continue to payment.`, 'info');
+  renderToast(`Order ${orderId} reserved — proceed to payment`, 'info');
 }
 
 async function payNow(method = 'UPI') {
@@ -406,6 +599,10 @@ async function payNow(method = 'UPI') {
     paymentDetails.vpa = document.getElementById('vpa-input')?.value || 'user@upi';
   } else if (method === 'CARD') {
     paymentDetails.cardNumber = document.getElementById('card-num')?.value || '**** **** **** 1234';
+    paymentDetails.expiry = document.getElementById('card-expiry')?.value || '12/28';
+    paymentDetails.cvv = document.getElementById('card-cvv')?.value || '123';
+  } else if (method === 'COD') {
+    paymentDetails.method = 'COD';
   }
 
   // Update demo flags from UI
@@ -428,6 +625,7 @@ async function payNow(method = 'UPI') {
     const response = await rpcPost('/process_payment', {
       orderId: state.pendingPayment.orderId,
       amount: state.pendingPayment.amount,
+      paymentKey: state.pendingPayment.orderId,
       method: method,
       details: paymentDetails,
       demo_fail: state.failureDemo.simulatePaymentFailure,
@@ -438,106 +636,102 @@ async function payNow(method = 'UPI') {
       throw new Error(response.message);
     }
 
-    state.orders = state.orders.map(o => 
+    state.orders = state.orders.map(o =>
       o.orderId === state.pendingPayment.orderId ? { ...o, status: 'CONFIRMED_PAID' } : o
     );
-    
+
     logActivity(`Payment successful! Order ${state.pendingPayment.orderId} confirmed.`, 'success');
     renderToast('Payment successful!', 'success');
     state.pendingPayment = null;
+    persistLocalState();
     goTo('orders');
   } catch (err) {
     logActivity(`Payment failed: ${err.message}`, 'error');
     renderToast(err.message, 'error');
-    
+
     // Auto-compensation if server error
     if (err.message.includes('500') || state.failureDemo.simulateServerError) {
        logActivity('Server error detected. Initiating stock recovery...', 'warning');
        await rpcPost('/release_stock', {
          orderId: state.pendingPayment.orderId,
+         cart: state.pendingPayment.items,
          reason: 'payment_failed'
        });
-       state.orders = state.orders.map(o => 
-         o.orderId === state.pendingPayment.orderId ? { ...o, status: 'PAYMENT_FAILED_STOCK_RELEASED' } : o
-       );
-       state.pendingPayment = null;
+      state.orders = state.orders.map(o =>
+        o.orderId === state.pendingPayment.orderId ? { ...o, status: 'PAYMENT_FAILED_STOCK_RELEASED' } : o
+      );
+      state.pendingPayment = null;
+      persistLocalState();
     }
   } finally {
     state.rpcBusy = false;
+    persistLocalState();
     render();
   }
 }
 
-function productById(id) {
-  return state.productIndex.get(id);
-}
-
-function cartTotal() {
-  return state.cart.reduce((sum, item) => {
-    const p = productById(item.id);
-    return sum + (p ? p.price * item.qty : 0);
-  }, 0);
-}
-
-function renderToast(message, type = 'info') {
-  const toast = document.createElement('div');
-  toast.className = `toast ${type}`;
-  toast.textContent = message;
-  document.body.appendChild(toast);
-  setTimeout(() => toast.classList.add('show'), 10);
-  setTimeout(() => {
-    toast.classList.remove('show');
-    setTimeout(() => toast.remove(), 250);
-  }, 2000);
-}
-
+// ─── RENDER: HEADER ────────────────────────────────────────────────────────────
 function renderHeader() {
-  const links = Object.keys(PAGE_TITLES)
-    .map((key) => `
-      <button class="nav-link ${state.page === key ? 'active' : ''}" data-nav="${key}">
-        ${PAGE_TITLES[key]}
-      </button>
-    `)
-    .join('');
+  const count = cartCount();
+  const links = Object.keys(PAGE_TITLES).map(key => {
+    const isCart = key === 'cart';
+    const badge  = isCart && count > 0 ? `<span class="cart-badge">${count > 9 ? '9+' : count}</span>` : '';
+    return `<button class="nav-link ${state.page === key ? 'active' : ''}" data-nav="${key}">
+      ${PAGE_ICONS[key]} ${PAGE_TITLES[key]}${badge}
+    </button>`;
+  }).join('');
 
   return `
     <header class="site-header fade-in">
       <div class="brand-wrap">
-        <div style="display: flex; align-items: center; gap: 0.5rem;">
-          <p class="brand-kicker">DISTRIBUTED COMMERCE</p>
-          <span class="sync-indicator" title="Live Sync Active"></span>
-        </div>
-        <h1 class="brand-title">Aster Cart</h1>
+        <p class="brand-kicker">
+          <span class="sync-indicator" title="Live sync active"></span>
+          Distributed Commerce
+        </p>
+        <h1 class="brand-title">Aster<span>Cart</span></h1>
       </div>
       <nav class="nav-row">${links}</nav>
       <div class="header-stats">
-        <span class="pill">Items ${cartCount()}</span>
-        <span class="pill">Orders ${state.orders.length}</span>
-        <span class="pill ${state.auth.loggedIn ? 'ok-pill' : ''}">${state.auth.loggedIn ? `Hi ${state.auth.name}` : 'Guest'}</span>
+        <span class="pill">${state.orders.length} Orders</span>
+        <span class="pill ${state.auth.loggedIn ? 'ok-pill' : ''}">${state.auth.loggedIn ? `◉ ${state.auth.name}` : 'Guest'}</span>
+        <span class="pill">RPC: ${state.backendRoute}</span>
       </div>
     </header>
   `;
 }
 
+// ─── RENDER: HOME ──────────────────────────────────────────────────────────────
 function renderHomePage() {
-  const featured = state.products.slice(0, 3)
-    .map((p) => `
-      <article class="feature-card">
-        <img src="${p.image}" alt="${p.name}" />
-        <div class="feature-overlay">
-          <h3>${p.name}</h3>
-          <p>${inr(p.price)}</p>
-        </div>
-      </article>
-    `)
-    .join('');
+  const featured = state.products.slice(0, 4).map((p, i) => `
+    <article class="feature-card" data-view="${p.id}" style="animation-delay:${i * 0.08}s">
+      <img src="${p.image}" alt="${p.name}" loading="lazy" />
+      <div class="feature-overlay">
+        <h3>${p.name}</h3>
+        <p>${inr(p.price)}</p>
+      </div>
+      <span class="feature-explore">Explore →</span>
+    </article>`).join('');
 
   return `
     <section class="home-hero page-enter">
       <div class="home-copy">
-        <p class="kicker">Mutex + RPC + Saga Compensation</p>
-        <h2>Shop with reliable stock reservation and payment orchestration.</h2>
-        <p>Every order reserves inventory first, then processes payment, and auto-releases stock on failure.</p>
+        <p class="kicker">Mutex · RPC · Saga Compensation</p>
+        <h2>Shop with <em>reliable</em> stock reservation &amp; payment orchestration.</h2>
+        <p>Every order reserves inventory atomically, then processes payment — and automatically releases stock on failure.</p>
+        <div class="hero-stats">
+          <div class="hero-stat">
+            <strong data-counter="${state.products.length}">${state.products.length}</strong>
+            <span>Products</span>
+          </div>
+          <div class="hero-stat">
+            <strong data-counter="${state.categories.length - 1}">${state.categories.length - 1}</strong>
+            <span>Categories</span>
+          </div>
+          <div class="hero-stat">
+            <strong data-counter="${state.orders.length}">${state.orders.length}</strong>
+            <span>Orders placed</span>
+          </div>
+        </div>
         <div class="hero-actions">
           <button class="cta" data-nav="shop">Start Shopping</button>
           <button class="cta ghost" data-nav="activity">View Activity</button>
@@ -548,102 +742,155 @@ function renderHomePage() {
   `;
 }
 
+// ─── RENDER: SHOP ──────────────────────────────────────────────────────────────
 function renderShopPage() {
-  const categories = categoryList();
-  const maxPriceLimit = getMaxProductPrice();
-  const cards = filteredProducts()
-    .map((p) => {
-      const remaining = p.stock;
-      return `
-        <article class="product-card stagger-item">
-          <img src="${p.image}${p.image.includes('?') ? '&' : '?'}v=${state.startTime}" alt="${p.name}" class="product-image" loading="lazy" />
-          <div class="product-body">
-            <div class="meta">${p.category}</div>
-            <h3>${p.name}</h3>
-            <div class="price-row">
-              <span class="price">${inr(p.price)}</span>
-              <span class="stock ${remaining > 0 ? 'ok' : 'out'}">${remaining > 0 ? `${remaining} left` : 'Out of stock'}</span>
-            </div>
-            <div class="rating">${stars(p.rating)} ${p.rating}</div>
-            <div class="action-row">
-              <button class="ghost-btn" data-view="${p.id}">View Details</button>
-              <button data-add="${p.id}" ${remaining <= 0 ? 'disabled' : ''}>Add to Cart</button>
-            </div>
+  const maxLimit = getMaxProductPrice();
+  const slider   = state.sliderValue ?? maxLimit;
+  const q        = state.searchQuery.trim();
+  const results  = filteredProducts();
+
+  const cards = results.map(p => {
+    const stockOk = p.stock > 0;
+    const nameHtml = highlightMatch(p.name, q);
+    return `
+      <article class="product-card stagger-item scroll-fade-item">
+        <div class="product-img-wrap">
+          <img src="${p.image}" alt="${p.name}" class="product-image" loading="lazy" />
+          <span class="product-badge">${p.category}</span>
+          <span class="stock-badge ${stockOk ? 'ok' : 'out'}">${stockOk ? `${p.stock} left` : 'Sold out'}</span>
+          <div class="product-quick">
+            <button class="ghost-btn" data-view="${p.id}" style="font-size:0.75rem;">Quick View</button>
+            <button data-add="${p.id}" ${!stockOk ? 'disabled' : ''} style="font-size:0.75rem;">+ Cart</button>
           </div>
-        </article>
-      `;
-    })
-    .join('');
+        </div>
+        <div class="product-body">
+          <div class="meta">${p.category}</div>
+          <h3>${nameHtml}</h3>
+          <div class="price-row">
+            <span class="price">${inr(p.price)}</span>
+          </div>
+          <div class="rating"><span class="stars">${stars(p.rating)}</span> ${p.rating}</div>
+          <div class="action-row">
+            <button class="ghost-btn" data-view="${p.id}">Details</button>
+            <button data-add="${p.id}" ${!stockOk ? 'disabled' : ''}>Add to Cart</button>
+          </div>
+        </div>
+      </article>`;
+  }).join('');
+
+  // Build an informative empty state
+  const emptyState = `
+    <div class="catalog-empty">
+      <div class="catalog-empty-icon">🔍</div>
+      <h3>No products found</h3>
+      <p>${q ? `No results for "${q}" — try a different term or clear the filter.` : 'Try adjusting your filters.'}</p>
+      <button class="ghost-btn" data-reset-filters style="margin-top:0.5rem;">Clear all filters</button>
+    </div>`;
+
+  // Count badge shown next to search input
+  const countLabel = q ? `${results.length}` : '';
 
   return `
     <section class="shop-wrap page-enter">
       <div class="toolbar">
         <div class="chips">
-          ${categories.map((c) => `<button class="chip ${state.selectedCategory === c ? 'active' : ''}" data-cat="${c}">${c}</button>`).join('')}
+          ${state.categories.map(c => `<button class="chip ${state.selectedCategory === c ? 'active' : ''}" data-cat="${c}">${c}</button>`).join('')}
         </div>
         <div class="filter-row">
-          <input type="text" placeholder="Search products or category" value="${state.searchQuery}" data-search />
+          <div class="search-wrap ${q ? 'has-value' : ''}">
+            <span class="search-icon">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M11 11L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <input
+              type="text"
+              id="search-input"
+              placeholder="Search products…"
+              value="${q}"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            ${q ? `<span class="search-count">${countLabel}</span>` : ''}
+            <button class="search-clear ghost-btn" data-clear-search title="Clear search" aria-label="Clear search">✕</button>
+          </div>
           <select data-sort>
-            <option value="featured" ${state.sortBy === 'featured' ? 'selected' : ''}>Featured</option>
-            <option value="price-asc" ${state.sortBy === 'price-asc' ? 'selected' : ''}>Price: Low to High</option>
-            <option value="price-desc" ${state.sortBy === 'price-desc' ? 'selected' : ''}>Price: High to Low</option>
-            <option value="rating-desc" ${state.sortBy === 'rating-desc' ? 'selected' : ''}>Rating: High to Low</option>
+            <option value="featured"   ${state.sortBy === 'featured'   ? 'selected' : ''}>Featured</option>
+            <option value="price-asc"  ${state.sortBy === 'price-asc'  ? 'selected' : ''}>Price: Low → High</option>
+            <option value="price-desc" ${state.sortBy === 'price-desc' ? 'selected' : ''}>Price: High → Low</option>
+            <option value="rating-desc"${state.sortBy === 'rating-desc'? 'selected' : ''}>Top Rated</option>
           </select>
           <label class="price-slider">
-            <span>Up to ${inr(state.maxPrice || maxPriceLimit)}</span>
-            <input type="range" min="0" max="${maxPriceLimit}" step="500" value="${state.maxPrice || maxPriceLimit}" data-price />
+            <span data-price-label>Up to ${inr(slider)}</span>
+            <input type="range" min="0" max="${maxLimit}" step="500" value="${slider}" data-price />
           </label>
-          <button class="ghost-btn" data-reset-filters>Reset</button>
+          <button class="ghost-btn" data-reset-filters style="white-space:nowrap;">Reset ↺</button>
         </div>
       </div>
-      <section class="catalog">${cards || '<p class="empty">No products found.</p>'}</section>
+      <section class="catalog">${cards || emptyState}</section>
     </section>
   `;
 }
 
-
-
+// ─── RENDER: CART ──────────────────────────────────────────────────────────────
 function renderCartPage() {
-  const cartItems = state.cart.length
-    ? state.cart.map((i) => {
-      const p = productById(i.id);
-      if (!p) return '';
-      return `
-        <li class="cart-item">
-          <img src="${p.image}${p.image.includes('?') ? '&' : '?'}v=${state.startTime}" alt="${p.name}" />
-          <div>
-            <strong>${p.name}</strong>
-            <small>${i.qty} x ${inr(p.price)}</small>
-          </div>
-          <button data-remove="${i.id}" class="link">Remove</button>
-        </li>
-      `;
-    }).join('')
-    : '<li class="empty">No items in cart</li>';
+  const items = state.cart.length
+    ? state.cart.map(i => {
+        const p = productById(i.id);
+        if (!p) return '';
+        return `
+          <li class="cart-item">
+            <img src="${p.image}" alt="${p.name}" />
+            <div>
+              <strong>${p.name}</strong>
+              <small>${i.qty} × ${inr(p.price)} = ${inr(p.price * i.qty)}</small>
+            </div>
+            <button class="link" data-remove="${i.id}" title="Remove">✕</button>
+          </li>`;
+      }).join('')
+    : '<li class="empty" style="padding:1rem 0;">Your cart is empty</li>';
 
   return `
     <section class="cart-page page-enter">
       <div class="panel">
-        <h2>Cart</h2>
-        <ul class="cart-list">${cartItems}</ul>
+        <h2>Cart <span style="font-family:DM Sans;font-size:1rem;color:var(--muted);font-weight:400;">(${cartCount()} items)</span></h2>
+        <ul class="cart-list">${items}</ul>
+        ${state.cart.length ? `
+          <div class="demo-box" style="margin-top:1rem;">
+            <label class="demo-label">
+              <input type="checkbox" id="high-priority" />
+              🚀 High Priority Order (VIP)
+            </label>
+            <p style="font-size:0.75rem;color:var(--muted);margin:0.25rem 0 0 1.5rem;">Priority requests jump the queue when the server is busy.</p>
+          </div>` : ''}
       </div>
       <div class="panel">
         <h2>Summary</h2>
-        <div class="total-row"><span>Total</span><strong>${inr(cartTotal())}</strong></div>
-        
-        <div class="demo-options" style="margin-bottom: 1.2rem; padding: 0.8rem; border: 1px dashed var(--accent); border-radius: 12px; background: rgba(254, 189, 105, 0.05);">
-          <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; color: var(--accent); font-size: 0.9rem; font-weight: 600;">
-            <input type="checkbox" id="high-priority" style="accent-color: var(--accent); width: 18px; height: 18px;" /> 🚀 High Priority Order (VIP)
-          </label>
-          <p style="font-size: 0.75rem; color: var(--muted); margin: 0.4rem 0 0 1.8rem;">Priority requests jump the queue if the server is busy.</p>
+        <div style="margin-bottom:0.5rem;">
+          ${state.cart.map(i => {
+            const p = productById(i.id);
+            return p ? `<div style="display:flex;justify-content:space-between;padding:0.3rem 0;font-size:0.85rem;color:var(--muted);">
+              <span>${p.name} ×${i.qty}</span><span>${inr(p.price * i.qty)}</span>
+            </div>` : '';
+          }).join('')}
         </div>
-
-        <button class="checkout" data-checkout ${state.rpcBusy ? 'disabled' : ''}>${state.rpcBusy ? 'Processing...' : 'Place Order'}</button>
+        <div class="total-row">
+          <span>Total</span>
+          <strong>${inr(cartTotal())}</strong>
+        </div>
+        <button class="checkout" data-checkout ${state.rpcBusy ? 'disabled' : ''}>
+          ${state.rpcBusy ? '⟳ Processing…' : 'Reserve & Checkout →'}
+        </button>
+        <p style="font-size:0.72rem;color:var(--muted);text-align:center;margin-top:0.75rem;">
+          Stock is reserved first — payment happens next
+        </p>
       </div>
     </section>
   `;
 }
 
+// ─── RENDER: PAYMENT ───────────────────────────────────────────────────────────
 function renderPaymentPage() {
   if (!state.pendingPayment) {
     return `
@@ -653,7 +900,45 @@ function renderPaymentPage() {
       </section>
     `;
   }
-  const method = state.selectedPaymentMethod;
+  const method = state.selectedPaymentMethod || 'UPI';
+
+  const paymentField = method === 'CARD'
+    ? `
+      <div class="pay-field">
+        <label for="card-num">Card Number</label>
+        <input type="text" id="card-num" placeholder="1234 5678 9012 3456" inputmode="numeric" autocomplete="cc-number" />
+      </div>
+      <div class="pay-field-row">
+        <div class="pay-field">
+          <label for="card-expiry">Expiry</label>
+          <input type="text" id="card-expiry" placeholder="MM/YY" autocomplete="cc-exp" />
+        </div>
+        <div class="pay-field">
+          <label for="card-cvv">CVV</label>
+          <input type="password" id="card-cvv" placeholder="123" inputmode="numeric" autocomplete="cc-csc" />
+        </div>
+      </div>
+      <div class="quick-fill">
+        <span class="quick-chip" data-fill="card-num" data-value="4111 1111 1111 1111">4111 1111 1111 1111</span>
+        <span class="quick-chip" data-fill="card-expiry" data-value="12/28">12/28</span>
+        <span class="quick-chip" data-fill="card-cvv" data-value="123">123</span>
+      </div>`
+    : method === 'COD'
+      ? `
+        <div class="pay-field">
+          <label for="cod-note">Cash on Delivery</label>
+          <input type="text" id="cod-note" placeholder="Pay at delivery" disabled value="Pay at delivery" />
+        </div>
+        <p class="empty" style="margin-top:0.5rem;">Your order will be marked for payment on delivery.</p>`
+      : `
+        <div class="pay-field">
+          <label for="vpa-input">Enter UPI ID (VPA)</label>
+          <input type="text" id="vpa-input" placeholder="username@bank" autocomplete="username" />
+        </div>
+        <div class="quick-fill">
+          <span class="quick-chip" data-fill="vpa-input" data-value="success@okaxis">success@okaxis</span>
+          <span class="quick-chip" data-fill="vpa-input" data-value="demo@okicici">demo@okicici</span>
+        </div>`;
 
   return `
     <section class="payment-page page-enter">
@@ -665,61 +950,32 @@ function renderPaymentPage() {
         
         <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 1.2rem;">Total Amount: <strong style="color: var(--ink); font-size: 1.1rem;">${inr(state.pendingPayment.amount)}</strong></p>
 
-        <div class="payment-tabs" style="display: flex; gap: 0.5rem; margin-bottom: 1.5rem; background: rgba(0,0,0,0.2); padding: 0.3rem; border-radius: 12px;">
-          <button class="nav-link ${method === 'UPI' ? 'active' : ''}" style="flex: 1; border: 0;" onclick="state.selectedPaymentMethod = 'UPI'; render();">UPI</button>
-          <button class="nav-link ${method === 'CARD' ? 'active' : ''}" style="flex: 1; border: 0;" onclick="state.selectedPaymentMethod = 'CARD'; render();">Card</button>
-          <button class="nav-link ${method === 'COD' ? 'active' : ''}" style="flex: 1; border: 0;" onclick="state.selectedPaymentMethod = 'COD'; render();">COD</button>
+        <div class="payment-tabs">
+          <button class="pay-tab ${method === 'UPI' ? 'active' : ''}" data-payment-method="UPI">UPI</button>
+          <button class="pay-tab ${method === 'CARD' ? 'active' : ''}" data-payment-method="CARD">Card</button>
+          <button class="pay-tab ${method === 'COD' ? 'active' : ''}" data-payment-method="COD">Other</button>
         </div>
 
         <div class="payment-form-wrap" style="min-height: 200px;">
-          ${method === 'UPI' ? `
-            <div class="fade-in">
-              <label style="display: block; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.85rem;">Enter UPI ID (VPA)</label>
-              <input type="text" id="vpa-input" placeholder="username@bank" style="width: 100%; padding: 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: #fff; margin-bottom: 1rem;" />
-              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                <span class="chip" style="font-size: 0.75rem; cursor: pointer;" onclick="document.getElementById('vpa-input').value='success@okaxis';">success@okaxis</span>
-                <span class="chip" style="font-size: 0.75rem; cursor: pointer;" onclick="document.getElementById('vpa-input').value='demo@okicici';">demo@okicici</span>
-              </div>
-            </div>
-          ` : method === 'CARD' ? `
-            <div class="fade-in">
-              <label style="display: block; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.85rem;">Card Number</label>
-              <input type="text" id="card-num" placeholder="XXXX XXXX XXXX XXXX" style="width: 100%; padding: 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: #fff; margin-bottom: 1rem;" />
-              <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
-                <div style="flex: 2;">
-                   <label style="display: block; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.85rem;">Expiry</label>
-                   <input type="text" placeholder="MM/YY" style="width: 100%; padding: 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: #fff;" />
-                </div>
-                <div style="flex: 1;">
-                   <label style="display: block; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.85rem;">CVV</label>
-                   <input type="password" placeholder="***" style="width: 100%; padding: 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: #fff;" />
-                </div>
-              </div>
-              <button class="ghost-btn" style="width: 100%; font-size: 0.8rem;" onclick="document.getElementById('card-num').value='4242 4242 4242 4242';">Fill Test Card</button>
-            </div>
-          ` : `
-            <div class="fade-in" style="text-align: center; padding: 2rem 0;">
-              <p style="color: var(--muted);">Pay cash when your order is delivered.</p>
-            </div>
-          `}
-        </div>
-
-        <div class="demo-options" style="margin-top: 2rem; padding: 1rem; border: 1px dashed var(--warn); border-radius: 12px; background: rgba(216, 160, 74, 0.05);">
-          <h3 style="font-size: 0.85rem; color: var(--warn); margin-bottom: 0.8rem; text-transform: uppercase;">⚠️ Failure Simulation</h3>
-          <div style="display: grid; gap: 0.6rem;">
-            <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--muted);">
-              <input type="checkbox" id="fail-payment" ${state.failureDemo.simulatePaymentFailure ? 'checked' : ''} /> Simulate Insufficient Funds
-            </label>
-            <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--muted);">
-              <input type="checkbox" id="fail-timeout" ${state.failureDemo.simulateTimeout ? 'checked' : ''} /> Simulate Network Timeout (4s)
-            </label>
-            <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--muted);">
-              <input type="checkbox" id="fail-server" ${state.failureDemo.simulateServerError ? 'checked' : ''} /> Simulate Server Outage (Distributed Crash)
-            </label>
+          <div class="fade-in">
+            ${paymentField}
           </div>
         </div>
 
-        <button class="cta" style="width: 100%; margin-top: 1.5rem; font-size: 1.1rem; padding: 1rem;" onclick="payNow('${method}')" ${state.rpcBusy ? 'disabled' : ''}>
+        <div class="demo-options">
+          <h3 style="font-size: 0.9rem; color: var(--accent); margin-top: 1.5rem; margin-bottom: 0.8rem;">⚡ Failure Simulation (Demo Only)</h3>
+          <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;">
+            <input type="checkbox" id="fail-payment" ${state.failureDemo.simulatePaymentFailure ? 'checked' : ''} /> Simulate Payment Failure
+          </label>
+          <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;">
+            <input type="checkbox" id="fail-timeout" ${state.failureDemo.simulateTimeout ? 'checked' : ''} /> Simulate Network Timeout
+          </label>
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;">
+            <input type="checkbox" id="fail-server" ${state.failureDemo.simulateServerError ? 'checked' : ''} /> Simulate Server Error
+          </label>
+        </div>
+
+        <button class="cta" style="width: 100%; margin-top: 1.5rem; font-size: 1.1rem; padding: 1rem;" data-pay-now="${method}" ${state.rpcBusy ? 'disabled' : ''}>
           ${state.rpcBusy ? 'Verifying...' : `Pay ${inr(state.pendingPayment.amount)} Now`}
         </button>
       </div>
@@ -727,124 +983,85 @@ function renderPaymentPage() {
   `;
 }
 
+// ─── RENDER: PRODUCT DETAIL ────────────────────────────────────────────────────
 function renderProductPage() {
   const p = productById(state.activeProductId);
-  if (!p) {
-    return `
-      <section class="panel page-enter">
-        <h2>Product not found</h2>
-        <p class="empty">This product is unavailable in current catalog view.</p>
-        <button class="cta" data-nav="shop">Back to Shop</button>
-      </section>
-    `;
-  }
+  if (!p) return `
+    <section class="panel page-enter">
+      <h2>Product not found</h2>
+      <p class="empty">This product isn't available in the current catalog view.</p>
+      <button class="cta" data-nav="shop" style="margin-top:1rem;">Back to Shop</button>
+    </section>`;
+
+  // Use slightly varied image seeds for thumbnails
+  const thumb1 = getProductImage(p.id * 3 + 1, p.category + 'b');
+  const thumb2 = getProductImage(p.id * 5 + 2, p.category + 'c');
+  const thumb3 = getProductImage(p.id * 7 + 3, p.category + 'd');
 
   return `
     <section class="product-page page-enter">
-      <div class="panel product-gallery">
-        <img src="${p.image}${p.image.includes('?') ? '&' : '?'}v=${state.startTime}" alt="${p.name}" class="detail-main-image" />
+      <div class="product-gallery">
+        <img src="${p.image}" alt="${p.name}" class="detail-main-image" />
         <div class="thumb-row">
-          <img src="${getProductImage(p.id, `${p.category}-a`)}&v=${state.startTime}" alt="${p.name} view 1" />
-          <img src="${getProductImage(p.id, `${p.category}-b`)}&v=${state.startTime}" alt="${p.name} view 2" />
-          <img src="${getProductImage(p.id, `${p.category}-c`)}&v=${state.startTime}" alt="${p.name} view 3" />
+          <img src="${thumb1}" alt="${p.name} view 1" />
+          <img src="${thumb2}" alt="${p.name} view 2" />
+          <img src="${thumb3}" alt="${p.name} view 3" />
         </div>
       </div>
       <div class="panel product-info">
         <p class="meta">${p.category}</p>
-        <h2>${p.name}</h2>
+        <h2 style="font-family:'Instrument Serif',serif;font-size:2rem;line-height:1.1;margin:0.25rem 0 0.5rem;">${p.name}</h2>
         <p class="detail-price">${inr(p.price)}</p>
-        <p class="rating">${stars(p.rating)} ${p.rating}</p>
-        <p class="empty">Built for distributed ordering demos with stock reservation and payment orchestration.</p>
+        <div class="rating"><span class="stars">${stars(p.rating)}</span> ${p.rating} / 5.0</div>
+        <p class="empty" style="margin:0.75rem 0 0;">Built for distributed ordering demos with mutex-protected stock reservation and saga-based payment orchestration.</p>
         <div class="spec-grid">
-          <div><span>Stock</span><strong>${p.stock}</strong></div>
-          <div><span>SKU</span><strong>SKU-${p.id.toString().padStart(4, '0')}</strong></div>
-          <div><span>Delivery</span><strong>2-4 days</strong></div>
+          <div><span>Stock</span><strong>${p.stock > 0 ? p.stock + ' units' : 'Out of stock'}</strong></div>
+          <div><span>SKU</span><strong class="mono">SKU-${String(p.id).padStart(4, '0')}</strong></div>
+          <div><span>Delivery</span><strong>2–4 days</strong></div>
           <div><span>Warranty</span><strong>1 year</strong></div>
         </div>
         <div class="hero-actions">
           <button data-add="${p.id}" ${p.stock <= 0 ? 'disabled' : ''}>Add to Cart</button>
-          <button class="ghost-btn" data-nav="shop">Continue Shopping</button>
+          <button class="ghost-btn" data-nav="shop">← Continue Shopping</button>
         </div>
       </div>
     </section>
   `;
 }
 
-function renderAccountPage() {
-  if (!state.auth.loggedIn) {
-    return `
-      <section class="account-page page-enter">
-        <div class="panel account-panel">
-          <h2>Sign In</h2>
-          <p class="empty">Local account simulation for profile and order history.</p>
-          <form class="auth-form" data-auth-form>
-            <label>Name</label>
-            <input type="text" name="name" placeholder="Amit" required />
-            <label>Email</label>
-            <input type="email" name="email" placeholder="you@example.com" required />
-            <button type="submit">Sign In</button>
-          </form>
-        </div>
-      </section>
-    `;
-  }
-
-  return `
-    <section class="account-page page-enter">
-      <div class="panel account-panel">
-        <h2>Profile</h2>
-        <div class="profile-card">
-          <div class="avatar">${state.auth.name.slice(0, 1).toUpperCase()}</div>
-          <div>
-            <p><strong>${state.auth.name}</strong></p>
-            <small>${state.auth.email}</small>
-          </div>
-        </div>
-        <div class="spec-grid">
-          <div><span>Orders</span><strong>${state.orders.length}</strong></div>
-          <div><span>Cart Items</span><strong>${cartCount()}</strong></div>
-          <div><span>Status</span><strong>Active</strong></div>
-          <div><span>Tier</span><strong>Gold</strong></div>
-        </div>
-        <button class="ghost-btn" data-logout>Sign Out</button>
-      </div>
-    </section>
-  `;
-}
-
+// ─── RENDER: ORDERS ────────────────────────────────────────────────────────────
 function renderOrdersPage() {
   const rows = state.orders.length
-    ? state.orders.map((o) => `
-      <li class="order-row">
-        <div>
-          <strong>${o.orderId}</strong>
-          <small>${o.at}</small>
-        </div>
-        <span class="order-status ${o.status.toLowerCase()}">${o.status}</span>
-      </li>
-    `).join('')
-    : '<li class="empty">No orders yet</li>';
+    ? state.orders.map((o, i) => `
+        <li class="order-row" style="animation-delay:${i * 0.05}s">
+          <div>
+            <strong class="mono">${o.orderId}</strong>
+            <small>${o.at}</small>
+          </div>
+          <span class="order-status ${o.status.toLowerCase()}">${o.status.replace(/_/g, ' ')}</span>
+        </li>`).join('')
+    : '<li class="empty" style="padding:1rem 0;">No orders yet — add something to cart!</li>';
 
   return `
     <section class="panel page-enter">
-      <h2>Orders</h2>
+      <h2>Orders <span style="font-size:1rem;font-family:DM Sans;font-weight:400;color:var(--muted);">(${state.orders.length})</span></h2>
       <ul class="orders">${rows}</ul>
     </section>
   `;
 }
 
+// ─── RENDER: ACTIVITY ─────────────────────────────────────────────────────────
 function renderActivityPage() {
   const rows = state.activity.length
-    ? state.activity.map((a) => `
-      <li class="activity-row ${a.type}">
-        <span class="dot"></span>
-        <div>
-          <p>${a.message}</p>
-          <small>${a.at}</small>
-        </div>
-      </li>
-    `).join('')
-    : '<li class="empty">No activity yet</li>';
+    ? state.activity.map((a, i) => `
+        <li class="activity-row ${a.type}" style="animation-delay:${i * 0.03}s">
+          <span class="dot"></span>
+          <div>
+            <p>${a.message}</p>
+            <small>${a.at}</small>
+          </div>
+        </li>`).join('')
+    : '<li class="empty" style="padding:1rem 0;">No activity yet.</li>';
 
   return `
     <section class="panel page-enter">
@@ -854,157 +1071,340 @@ function renderActivityPage() {
   `;
 }
 
-function renderCurrentPage() {
-  if (state.page === 'home') return renderHomePage();
-  if (state.page === 'shop') return renderShopPage();
-  if (state.page === 'cart') return renderCartPage();
-  if (state.page === 'payment') return renderPaymentPage();
-  if (state.page === 'product') return renderProductPage();
-  if (state.page === 'orders') return renderOrdersPage();
-  if (state.page === 'activity') return renderActivityPage();
-  if (state.page === 'account') return renderAccountPage();
-  return renderHomePage();
+// ─── RENDER: ACCOUNT ───────────────────────────────────────────────────────────
+function renderAccountPage() {
+  if (!state.auth.loggedIn) return `
+    <section class="account-page page-enter">
+      <div class="panel account-panel">
+        <h2>Sign In</h2>
+        <p class="empty" style="margin-bottom:1.25rem;">Local session simulation — no server required.</p>
+        <form class="auth-form" data-auth-form>
+          <label>Name</label>
+          <input type="text" name="name" placeholder="Amit Kumar" required />
+          <label>Email</label>
+          <input type="email" name="email" placeholder="you@example.com" required />
+          <button type="submit" style="margin-top:0.5rem;">Sign In →</button>
+        </form>
+      </div>
+    </section>`;
+
+  return `
+    <section class="account-page page-enter">
+      <div class="panel account-panel">
+        <h2>Profile</h2>
+        <div class="profile-card">
+          <div class="avatar">${state.auth.name[0].toUpperCase()}</div>
+          <div>
+            <p>${state.auth.name}</p>
+            <small>${state.auth.email}</small>
+          </div>
+        </div>
+        <div class="spec-grid">
+          <div><span>Orders</span><strong>${state.orders.length}</strong></div>
+          <div><span>Cart Items</span><strong>${cartCount()}</strong></div>
+          <div><span>Status</span><strong style="color:var(--ok)">Active</strong></div>
+          <div><span>Tier</span><strong style="color:var(--accent)">Gold</strong></div>
+        </div>
+        <button class="ghost-btn" data-logout style="margin-top:0.5rem;">Sign Out</button>
+      </div>
+    </section>`;
 }
 
+// ─── RENDER: ROUTER ────────────────────────────────────────────────────────────
+function renderCurrentPage() {
+  const map = {
+    home: renderHomePage, shop: renderShopPage, cart: renderCartPage,
+    payment: renderPaymentPage, product: renderProductPage,
+    orders: renderOrdersPage, activity: renderActivityPage, account: renderAccountPage
+  };
+  return (map[state.page] || renderHomePage)();
+}
+
+// ─── MAIN RENDER ───────────────────────────────────────────────────────────────
 function render() {
-  if (state.loading) {
-    app.innerHTML = '<div class="panel page-enter"><p class="brand-kicker">RPC BRIDGE</p><h2>Connecting to rpc_server...</h2><p class="empty">Make sure Backend/rpc_server.py is running on localhost:8001.</p></div>';
+  if (state.error) {
+    app.innerHTML = `
+      <div class="panel page-enter" style="max-width:480px;margin:3rem auto;text-align:center;">
+        <p style="font-size:2.5rem;margin-bottom:0.5rem;">⚡</p>
+        <h2 style="color:var(--bad);">Connection Failed</h2>
+        <p class="empty">${state.error}</p>
+        <button class="cta" onclick="location.reload()" style="margin-top:1rem;">Retry</button>
+      </div>`;
     return;
   }
 
-  if (state.error) {
-    app.innerHTML = `<div class="panel page-enter"><p class="brand-kicker">RPC BRIDGE</p><h2>Connection Failed</h2><p class="empty">${state.error}</p></div>`;
-    return;
-  }
+  // Preserve search input focus and cursor position across re-renders
+  const prevSearchEl = document.getElementById('search-input');
+  const prevSelStart = prevSearchEl?.selectionStart;
+  const prevSelEnd   = prevSearchEl?.selectionEnd;
+  const prevFocused  = document.activeElement?.id === 'search-input';
 
   app.innerHTML = `
-    <div class="background-shape shape-a"></div>
-    <div class="background-shape shape-b"></div>
     ${renderHeader()}
     <main class="page-shell">${renderCurrentPage()}</main>
+    ${renderToasts()}
   `;
 
-  document.querySelectorAll('[data-nav]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const target = btn.getAttribute('data-nav');
-      goTo(target);
-    });
-  });
+  // ── Restore search focus / cursor ──────────────────────────────────────────
+  if (prevFocused) {
+    const newSearchEl = document.getElementById('search-input');
+    if (newSearchEl) {
+      newSearchEl.focus();
+      try { newSearchEl.setSelectionRange(prevSelStart, prevSelEnd); } catch (_) {}
+    }
+  }
 
-  document.querySelectorAll('[data-cat]').forEach((btn) => {
+  // ── Event Bindings ──────────────────────────────────────────────────────────
+
+  document.querySelectorAll('[data-nav]').forEach(btn =>
+    btn.addEventListener('click', () => goTo(btn.getAttribute('data-nav')))
+  );
+
+  document.querySelectorAll('[data-cat]').forEach(btn =>
     btn.addEventListener('click', async () => {
       state.selectedCategory = btn.getAttribute('data-cat');
-      state.loading = true;
+      state.loading = true; render();
+      try { await loadProducts(state.selectedCategory); }
+      catch (e) { state.error = e.message; }
+      state.loading = false; render();
+    })
+  );
+
+  document.querySelectorAll('[data-add]').forEach(btn =>
+    btn.addEventListener('click', () => addToCart(Number(btn.getAttribute('data-add'))))
+  );
+
+  document.querySelectorAll('[data-view]').forEach(btn =>
+    btn.addEventListener('click', () => openProduct(Number(btn.getAttribute('data-view'))))
+  );
+
+  document.querySelectorAll('[data-remove]').forEach(btn =>
+    btn.addEventListener('click', () => removeFromCart(Number(btn.getAttribute('data-remove'))))
+  );
+
+  document.querySelector('[data-checkout]')?.addEventListener('click', checkout);
+
+  document.querySelectorAll('[data-payment-method]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.selectedPaymentMethod = btn.getAttribute('data-payment-method') || 'UPI';
       render();
-      try {
-        await loadProducts(state.selectedCategory);
-      } catch (err) {
-        state.error = err.message || String(err);
+    });
+  });
+
+  document.querySelectorAll('[data-pay-now]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      payNow(btn.getAttribute('data-pay-now'));
+    });
+  });
+
+  document.querySelectorAll('[data-fill]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = document.getElementById(btn.getAttribute('data-fill'));
+      if (target) target.value = btn.getAttribute('data-value');
+    });
+  });
+
+  // ── SEARCH: debounced input, instant clear ──────────────────────────────────
+  const searchEl = document.getElementById('search-input');
+  if (searchEl) {
+    searchEl.addEventListener('input', e => {
+      const val = e.target.value;
+      // Update the wrapper class for clear button visibility instantly (no re-render)
+      const wrap = searchEl.closest('.search-wrap');
+      if (wrap) wrap.classList.toggle('has-value', val.length > 0);
+      // Debounce the actual filter + re-render
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        state.searchQuery = val;
+        // Soft update: only re-render the catalog, not the whole page
+        _updateCatalogOnly();
+      }, 220);
+    });
+
+    // Handle keyboard shortcuts
+    searchEl.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        clearTimeout(searchDebounceTimer);
+        state.searchQuery = '';
+        searchEl.value = '';
+        const wrap = searchEl.closest('.search-wrap');
+        if (wrap) wrap.classList.remove('has-value');
+        _updateCatalogOnly();
       }
-      state.loading = false;
-      render();
-    });
-  });
-
-  document.querySelectorAll('[data-add]').forEach((btn) => {
-    btn.addEventListener('click', () => addToCart(Number(btn.getAttribute('data-add'))));
-  });
-
-  document.querySelectorAll('[data-view]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = Number(btn.getAttribute('data-view'));
-      openProduct(id);
-    });
-  });
-
-  document.querySelectorAll('[data-remove]').forEach((btn) => {
-    btn.addEventListener('click', () => removeFromCart(Number(btn.getAttribute('data-remove'))));
-  });
-
-  const checkoutBtn = document.querySelector('[data-checkout]');
-  if (checkoutBtn) {
-    checkoutBtn.addEventListener('click', checkout);
-  }
-
-  const searchInput = document.querySelector('[data-search]');
-  if (searchInput) {
-    searchInput.addEventListener('input', (e) => {
-      state.searchQuery = e.target.value;
-      render();
     });
   }
 
-  const sortSelect = document.querySelector('[data-sort]');
-  if (sortSelect) {
-    sortSelect.addEventListener('change', (e) => {
-      state.sortBy = e.target.value;
-      render();
-    });
-  }
+  // ── CLEAR SEARCH BUTTON ─────────────────────────────────────────────────────
+  document.querySelector('[data-clear-search]')?.addEventListener('click', () => {
+    clearTimeout(searchDebounceTimer);
+    state.searchQuery = '';
+    const el = document.getElementById('search-input');
+    if (el) {
+      el.value = '';
+      el.focus();
+      const wrap = el.closest('.search-wrap');
+      if (wrap) wrap.classList.remove('has-value');
+    }
+    _updateCatalogOnly();
+  });
 
-  const priceSlider = document.querySelector('[data-price]');
-  if (priceSlider) {
-    priceSlider.addEventListener('input', (e) => {
+  const sortEl = document.querySelector('[data-sort]');
+  if (sortEl) sortEl.addEventListener('change', e => { state.sortBy = e.target.value; _updateCatalogOnly(); });
+
+  const priceEl = document.querySelector('[data-price]');
+  if (priceEl) {
+    priceEl.addEventListener('input', e => {
+      state.sliderValue = Number(e.target.value);
+      const lbl = document.querySelector('[data-price-label]');
+      if (lbl) {
+        lbl.textContent = `Up to ${inr(state.sliderValue)}`;
+        lbl.style.transform = 'scale(1.05)';
+        lbl.style.transition = 'transform 0.15s var(--ease-bounce)';
+        setTimeout(() => { lbl.style.transform = ''; }, 200);
+      }
+      const pct = (state.sliderValue / getMaxProductPrice()) * 100;
+      priceEl.style.background = `linear-gradient(90deg, var(--accent) ${pct}%, rgba(255,255,255,0.1) ${pct}%)`;
+    });
+    priceEl.addEventListener('change', e => {
       state.maxPrice = Number(e.target.value);
-      render();
+      state.sliderValue = state.maxPrice;
+      _updateCatalogOnly();
     });
+    const initPct = getMaxProductPrice() > 0 ? (state.sliderValue / getMaxProductPrice()) * 100 : 100;
+    priceEl.style.background = `linear-gradient(90deg, var(--accent) ${initPct}%, rgba(255,255,255,0.1) ${initPct}%)`;
   }
 
-  const resetFiltersBtn = document.querySelector('[data-reset-filters]');
-  if (resetFiltersBtn) {
-    resetFiltersBtn.addEventListener('click', () => {
-      state.searchQuery = '';
-      state.sortBy = 'featured';
-      state.maxPrice = getMaxProductPrice();
-      render();
-    });
-  }
-
-  document.querySelectorAll('[data-pay]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const method = btn.getAttribute('data-pay') || 'UPI';
-      payNow(method);
-    });
+  document.querySelector('[data-reset-filters]')?.addEventListener('click', () => {
+    clearTimeout(searchDebounceTimer);
+    state.searchQuery = ''; state.sortBy = 'featured';
+    state.maxPrice = getMaxProductPrice(); state.sliderValue = state.maxPrice;
+    render();
   });
 
   const authForm = document.querySelector('[data-auth-form]');
   if (authForm) {
-    authForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const formData = new FormData(authForm);
-      const name = String(formData.get('name') || '').trim();
-      const email = String(formData.get('email') || '').trim();
-      if (!name || !email) {
-        renderToast('Please enter name and email', 'error');
-        return;
-      }
+    authForm.addEventListener('submit', e => {
+      e.preventDefault();
+      const fd = new FormData(authForm);
+      const name  = String(fd.get('name')  || '').trim();
+      const email = String(fd.get('email') || '').trim();
+      if (!name || !email) { renderToast('Please fill in all fields', 'error'); return; }
       loginUser(name, email);
-      renderToast(`Welcome, ${name}`, 'success');
+      renderToast(`Welcome, ${name}! 👋`, 'success');
+      goTo('home');
       render();
     });
   }
 
-  const logoutBtn = document.querySelector('[data-logout]');
-  if (logoutBtn) {
-    logoutBtn.addEventListener('click', () => {
-      logoutUser();
-      renderToast('Signed out', 'info');
-      render();
-    });
-  }
+  document.querySelector('[data-logout]')?.addEventListener('click', () => {
+    logoutUser(); renderToast('Signed out', 'info'); goTo('account'); render();
+  });
 
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  // ── Post-render enhancements ───────────────────────────────────────────────
+  requestAnimationFrame(() => {
+    initScrollObserver();
+    initCardTilt();
+    initImageFadeIn();
+    if (state.page === 'home') setTimeout(animateCounters, 200);
+  });
 }
 
-window.addEventListener('hashchange', () => {
-  syncPageFromHash();
-  render();
-});
-
-window.addEventListener('keydown', (event) => {
-  if (event.key.toLowerCase() === 's') {
-    goTo('shop');
+// ─── PARTIAL UPDATE: CATALOG ONLY (avoids full re-render on search) ───────────
+function _updateCatalogOnly() {
+  const catalogEl = document.querySelector('.catalog');
+  if (!catalogEl || state.page !== 'shop') {
+    // Fall back to full render if catalog isn't in DOM
+    render();
+    return;
   }
+
+  const q        = state.searchQuery.trim();
+  const results  = filteredProducts();
+
+  // Update search wrapper class
+  const wrap = document.querySelector('.search-wrap');
+  if (wrap) wrap.classList.toggle('has-value', q.length > 0);
+
+  // Update result count badge
+  const countEl = document.querySelector('.search-count');
+  if (countEl) {
+    countEl.textContent = q ? `${results.length}` : '';
+  } else if (q) {
+    // Insert count badge if it doesn't exist yet
+    const newCountEl = document.createElement('span');
+    newCountEl.className = 'search-count';
+    newCountEl.textContent = `${results.length}`;
+    if (wrap) wrap.appendChild(newCountEl);
+  }
+
+  if (results.length === 0) {
+    catalogEl.innerHTML = `
+      <div class="catalog-empty">
+        <div class="catalog-empty-icon">🔍</div>
+        <h3>No products found</h3>
+        <p>${q ? `No results for "${q}" — try a different term or clear the filter.` : 'Try adjusting your filters.'}</p>
+        <button class="ghost-btn" data-reset-filters style="margin-top:0.5rem;">Clear all filters</button>
+      </div>`;
+    catalogEl.querySelector('[data-reset-filters]')?.addEventListener('click', () => {
+      clearTimeout(searchDebounceTimer);
+      state.searchQuery = ''; state.sortBy = 'featured';
+      state.maxPrice = getMaxProductPrice(); state.sliderValue = state.maxPrice;
+      render();
+    });
+    return;
+  }
+
+  catalogEl.innerHTML = results.map(p => {
+    const stockOk = p.stock > 0;
+    const nameHtml = highlightMatch(p.name, q);
+    return `
+      <article class="product-card stagger-item scroll-fade-item">
+        <div class="product-img-wrap">
+          <img src="${p.image}" alt="${p.name}" class="product-image" loading="lazy" />
+          <span class="product-badge">${p.category}</span>
+          <span class="stock-badge ${stockOk ? 'ok' : 'out'}">${stockOk ? `${p.stock} left` : 'Sold out'}</span>
+          <div class="product-quick">
+            <button class="ghost-btn" data-view="${p.id}" style="font-size:0.75rem;">Quick View</button>
+            <button data-add="${p.id}" ${!stockOk ? 'disabled' : ''} style="font-size:0.75rem;">+ Cart</button>
+          </div>
+        </div>
+        <div class="product-body">
+          <div class="meta">${p.category}</div>
+          <h3>${nameHtml}</h3>
+          <div class="price-row"><span class="price">${inr(p.price)}</span></div>
+          <div class="rating"><span class="stars">${stars(p.rating)}</span> ${p.rating}</div>
+          <div class="action-row">
+            <button class="ghost-btn" data-view="${p.id}">Details</button>
+            <button data-add="${p.id}" ${!stockOk ? 'disabled' : ''}>Add to Cart</button>
+          </div>
+        </div>
+      </article>`;
+  }).join('');
+
+  // Re-attach card event listeners (only for the new cards)
+  catalogEl.querySelectorAll('[data-add]').forEach(btn =>
+    btn.addEventListener('click', () => addToCart(Number(btn.getAttribute('data-add'))))
+  );
+  catalogEl.querySelectorAll('[data-view]').forEach(btn =>
+    btn.addEventListener('click', () => openProduct(Number(btn.getAttribute('data-view'))))
+  );
+
+  requestAnimationFrame(() => {
+    initScrollObserver();
+    initCardTilt();
+    initImageFadeIn();
+  });
+}
+
+// ─── GLOBAL HOOKS ──────────────────────────────────────────────────────────────
+window.state        = state;
+window.render       = render;
+window.payNow       = payNow;
+window.closeToast   = closeToast;
+
+window.addEventListener('hashchange', () => { syncPageFromHash(); render(); });
+window.addEventListener('keydown', e => {
+  if (e.key.toLowerCase() === 's' && !e.ctrlKey && !e.metaKey && document.activeElement.tagName !== 'INPUT') goTo('shop');
 });
 
 initialize();

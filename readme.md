@@ -88,6 +88,18 @@ When you use the frontend, progress logs are printed in the `rpc_server.py` term
 - `filter_by_category`
 - `reserve_stock` (including lock acquisition and stock transitions)
 
+### 7. Optional: Start a Second RPC Replica for Load Balancing / Failover
+
+The Vite bridge can route read requests in round-robin order and retry writes on another replica if one server is unavailable. To test that path, start a second RPC server on a different port while pointing both processes at the same SQLite state file:
+
+```bash
+cd Backend
+python rpc_server.py --port 8001 --db-path rpc_state.db
+python rpc_server.py --port 8002 --db-path rpc_state.db
+```
+
+The frontend will prefer the primary server, but it can fall back to the backup server if the first one fails. Because both replicas share the same SQLite database file, stock changes remain consistent.
+
 ## Usage
 
 1. Run Vite frontend (`npm run dev` in `Frontend`)

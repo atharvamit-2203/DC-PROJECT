@@ -8,11 +8,15 @@ Run this FIRST before the Streamlit app.
 """
 
 from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
+import argparse
 import datetime
-import threading
+import json
 import random
+import sqlite3
+import threading
 import time
 import heapq
+from pathlib import Path
 
 # ─────────────────────────────────────────────────
 #  MOCK DATABASE  — Prices in INR (₹)
@@ -71,6 +75,105 @@ PRODUCTS_DB = [
 db_lock = threading.Lock()
 processed_idempotency = {}
 processed_payment = {}
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_DB_PATH = BASE_DIR / "rpc_state.db"
+DB_PATH = DEFAULT_DB_PATH
+
+def _serialize_response(payload: dict) -> str:
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def _deserialize_response(payload: str) -> dict:
+    return json.loads(payload)
+
+
+def get_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def init_db() -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                price INTEGER NOT NULL,
+                stock INTEGER NOT NULL,
+                rating REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS response_cache (
+                cache_key TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+        current_count = conn.execute("SELECT COUNT(*) AS count FROM products").fetchone()["count"]
+        if current_count == 0:
+            conn.executemany(
+                "INSERT INTO products (id, name, category, price, stock, rating) VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (p["id"], p["name"], p["category"], p["price"], p["stock"], p["rating"])
+                    for p in PRODUCTS_DB
+                ]
+            )
+
+
+def load_cached_response(cache_key: str, kind: str) -> dict | None:
+    if not cache_key:
+        return None
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT response_json FROM response_cache WHERE cache_key = ? AND kind = ?",
+            (cache_key, kind),
+        ).fetchone()
+    if not row:
+        return None
+    return _deserialize_response(row["response_json"])
+
+
+def store_cached_response(cache_key: str, kind: str, response: dict) -> None:
+    if not cache_key:
+        return
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO response_cache (cache_key, kind, response_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                kind = excluded.kind,
+                response_json = excluded.response_json,
+                updated_at = excluded.updated_at
+            """,
+            (cache_key, kind, _serialize_response(response), datetime.datetime.now().isoformat()),
+        )
+
+
+def rows_to_products(rows):
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "category": row["category"],
+            "price": row["price"],
+            "stock": row["stock"],
+            "rating": row["rating"],
+        }
+        for row in rows
+    ]
 
 class PriorityMutex:
     def __init__(self):
@@ -114,12 +217,17 @@ class RequestHandler(SimpleXMLRPCRequestHandler):
 def filter_by_category(category: str) -> dict:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[RPC SERVER] [{timestamp}] filter_by_category('{category}')")
-    with db_lock:
+    with get_connection() as conn:
         if category.strip().upper() == "ALL":
-            matched = PRODUCTS_DB[:]
+            rows = conn.execute("SELECT * FROM products ORDER BY id").fetchall()
         else:
-            matched = [p for p in PRODUCTS_DB if p["category"].lower() == category.strip().lower()]
-    all_categories = sorted(set(p["category"] for p in PRODUCTS_DB))
+            rows = conn.execute(
+                "SELECT * FROM products WHERE lower(category) = lower(?) ORDER BY id",
+                (category.strip(),),
+            ).fetchall()
+        all_categories = [row["category"] for row in conn.execute("SELECT DISTINCT category FROM products ORDER BY category").fetchall()]
+
+    matched = rows_to_products(rows)
     if not matched:
         return {
             "status": "not_found",
@@ -144,8 +252,9 @@ def filter_by_category(category: str) -> dict:
 def get_product(product_id: int) -> dict:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[RPC SERVER] [{timestamp}] get_product({product_id})")
-    with db_lock:
-        product = next((p for p in PRODUCTS_DB if p["id"] == product_id), None)
+    with get_connection() as conn:
+        product_row = conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    product = rows_to_products([product_row])[0] if product_row else None
     if not product:
         return {
             "status": "not_found",
@@ -164,9 +273,12 @@ def get_product(product_id: int) -> dict:
 
 def list_categories() -> dict:
     print(f"[RPC SERVER] list_categories()")
-    with db_lock:
-        categories = sorted(set(p["category"] for p in PRODUCTS_DB))
-        counts = {cat: sum(1 for p in PRODUCTS_DB if p["category"] == cat) for cat in categories}
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT category, COUNT(*) AS count FROM products GROUP BY category ORDER BY category"
+        ).fetchall()
+        categories = [row["category"] for row in rows]
+        counts = {row["category"]: row["count"] for row in rows}
     return {
         "status": "success",
         "categories": categories,
@@ -183,6 +295,12 @@ def reserve_stock(payload: dict) -> dict:
     
     print(f"[RPC SERVER] [{timestamp}] reserve_stock() request received | Priority: {is_priority}")
 
+    if idempotency_key:
+        cached = load_cached_response(idempotency_key, "reserve_stock")
+        if cached:
+            print(f"[RPC SERVER] idempotency replay: {idempotency_key}")
+            return cached
+
     if not cart:
         print("[RPC SERVER] reserve_stock() failed: empty cart")
         return {
@@ -190,10 +308,6 @@ def reserve_stock(payload: dict) -> dict:
             "message": "Cart is empty",
             "timestamp": timestamp,
         }
-
-    if idempotency_key and idempotency_key in processed_idempotency:
-        print(f"[RPC SERVER] idempotency replay: {idempotency_key}")
-        return processed_idempotency[idempotency_key]
 
     print(f"[RPC SERVER] Thread {threading.get_ident()} waiting for priority_lock...")
     priority_mutex.acquire(is_priority)
@@ -204,42 +318,57 @@ def reserve_stock(payload: dict) -> dict:
         print("[RPC SERVER] Processing reservation (3s delay for demo)...")
         time.sleep(3)
 
-        for item in cart:
-            pid = item.get("id")
-            qty = int(item.get("qty", 0))
-            product = next((p for p in PRODUCTS_DB if p["id"] == pid), None)
-            if not product:
-                print(f"[RPC SERVER] product not found: id={pid}")
-                return {
-                    "success": False,
-                    "message": f"Product with ID {pid} not found",
-                    "timestamp": timestamp,
-                }
-            if qty <= 0:
-                print(f"[RPC SERVER] invalid quantity for id={pid}")
-                return {
-                    "success": False,
-                    "message": "Invalid quantity in cart",
-                    "timestamp": timestamp,
-                }
-            if product["stock"] < qty:
-                print(f"[RPC SERVER] insufficient stock for {product['name']}: requested={qty}, available={product['stock']}")
-                return {
-                    "success": False,
-                    "message": f"Insufficient stock for {product['name']}",
-                    "timestamp": timestamp,
-                }
+        with get_connection() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
 
-        for item in cart:
-            pid = item.get("id")
-            qty = int(item.get("qty", 0))
-            product = next((p for p in PRODUCTS_DB if p["id"] == pid), None)
-            before = product["stock"]
-            product["stock"] -= qty
-            after = product["stock"]
-            print(f"[RPC SERVER] reserved id={pid} qty={qty} stock {before}->{after}")
+                for item in cart:
+                    pid = item.get("id")
+                    qty = int(item.get("qty", 0))
+                    row = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
+                    if not row:
+                        print(f"[RPC SERVER] product not found: id={pid}")
+                        conn.rollback()
+                        return {
+                            "success": False,
+                            "message": f"Product with ID {pid} not found",
+                            "timestamp": timestamp,
+                        }
+                    if qty <= 0:
+                        print(f"[RPC SERVER] invalid quantity for id={pid}")
+                        conn.rollback()
+                        return {
+                            "success": False,
+                            "message": "Invalid quantity in cart",
+                            "timestamp": timestamp,
+                        }
+                    if row["stock"] < qty:
+                        print(f"[RPC SERVER] insufficient stock for {row['name']}: requested={qty}, available={row['stock']}")
+                        conn.rollback()
+                        return {
+                            "success": False,
+                            "message": f"Insufficient stock for {row['name']}",
+                            "timestamp": timestamp,
+                        }
 
-        updated = [{"id": p["id"], "stock": p["stock"]} for p in PRODUCTS_DB]
+                for item in cart:
+                    pid = item.get("id")
+                    qty = int(item.get("qty", 0))
+                    row = conn.execute("SELECT stock FROM products WHERE id = ?", (pid,)).fetchone()
+                    before = row["stock"]
+                    conn.execute("UPDATE products SET stock = stock - ? WHERE id = ?", (qty, pid))
+                    after = before - qty
+                    print(f"[RPC SERVER] reserved id={pid} qty={qty} stock {before}->{after}")
+
+                updated = [
+                    {"id": row["id"], "stock": row["stock"]}
+                    for row in conn.execute("SELECT id, stock FROM products ORDER BY id").fetchall()
+                ]
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
         response = {
             "success": True,
             "message": "Stock reserved successfully",
@@ -248,7 +377,7 @@ def reserve_stock(payload: dict) -> dict:
         }
 
         if idempotency_key:
-            processed_idempotency[idempotency_key] = response
+            store_cached_response(idempotency_key, "reserve_stock", response)
 
         print("[RPC SERVER] reserve_stock() completed successfully")
         return response
@@ -270,18 +399,24 @@ def release_stock(payload: dict) -> dict:
             "timestamp": timestamp,
         }
 
-    with db_lock:
+    with get_connection() as conn:
         print("[RPC SERVER] lock acquired for release_stock")
-        for item in cart:
-            pid = item.get("id")
-            qty = int(item.get("qty", 0))
-            product = next((p for p in PRODUCTS_DB if p["id"] == pid), None)
-            if not product:
-                continue
-            before = product["stock"]
-            product["stock"] += max(qty, 0)
-            after = product["stock"]
-            print(f"[RPC SERVER] released id={pid} qty={qty} stock {before}->{after}")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for item in cart:
+                pid = item.get("id")
+                qty = int(item.get("qty", 0))
+                row = conn.execute("SELECT stock, name FROM products WHERE id = ?", (pid,)).fetchone()
+                if not row:
+                    continue
+                before = row["stock"]
+                conn.execute("UPDATE products SET stock = stock + ? WHERE id = ?", (max(qty, 0), pid))
+                after = before + max(qty, 0)
+                print(f"[RPC SERVER] released id={pid} qty={qty} stock {before}->{after}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     return {
         "success": True,
@@ -294,13 +429,27 @@ def process_payment(payload: dict) -> dict:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     order_id = payload.get("orderId", "UNKNOWN") if isinstance(payload, dict) else "UNKNOWN"
     amount = int(payload.get("amount", 0)) if isinstance(payload, dict) else 0
-    payment_key = payload.get("paymentKey") if isinstance(payload, dict) else None
+    payment_key = (payload.get("paymentKey") if isinstance(payload, dict) else None) or order_id
     demo_fail = payload.get("demo_fail", False) if isinstance(payload, dict) else False
+    simulate_server_error = payload.get("simulate_server_error", False) if isinstance(payload, dict) else False
     print(f"[PAYMENT SERVICE] [{timestamp}] process_payment() order={order_id} amount={amount} demo_fail={demo_fail}")
 
-    if payment_key and payment_key in processed_payment:
+    cached = load_cached_response(payment_key, "payment")
+    if cached:
         print(f"[PAYMENT SERVICE] idempotency replay: {payment_key}")
-        return processed_payment[payment_key]
+        return cached
+
+    if simulate_server_error:
+        response = {
+            "success": False,
+            "status": "ERROR",
+            "message": "Internal server error (simulated)",
+            "orderId": order_id,
+            "timestamp": timestamp,
+        }
+        store_cached_response(payment_key, "payment", response)
+        print(f"[PAYMENT SERVICE] simulated server error for {order_id}")
+        return response
 
     # If demo_fail flag is set, force failure
     if demo_fail:
@@ -330,13 +479,16 @@ def process_payment(payload: dict) -> dict:
         }
         print(f"[PAYMENT SERVICE] payment failed for {order_id}")
 
-    if payment_key:
-        processed_payment[payment_key] = response
+    store_cached_response(payment_key, "payment", response)
 
     return response
 
 
-def start_server(host="0.0.0.0", port=8001):
+def start_server(host="0.0.0.0", port=8001, db_path=None):
+    global DB_PATH
+    DB_PATH = Path(db_path).resolve() if db_path else DEFAULT_DB_PATH
+    init_db()
+
     server = SimpleXMLRPCServer(
         (host, port),
         requestHandler=RequestHandler,
@@ -355,6 +507,7 @@ def start_server(host="0.0.0.0", port=8001):
     print("   🛒  E-Commerce RPC Server — Product Service")
     print("=" * 55)
     print(f"   URL     : http://{host}:{port}/RPC2")
+    print(f"   DB Path  : {DB_PATH}")
     print(f"   Products : {len(PRODUCTS_DB)}  |  Currency: INR (₹)")
     print("   Waiting for RPC calls... (Ctrl+C to stop)\n")
 
@@ -366,4 +519,9 @@ def start_server(host="0.0.0.0", port=8001):
 
 
 if __name__ == "__main__":
-    start_server()
+    parser = argparse.ArgumentParser(description="Distributed E-Commerce RPC product server")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8001)
+    parser.add_argument("--db-path", default=str(DEFAULT_DB_PATH))
+    args = parser.parse_args()
+    start_server(args.host, args.port, args.db_path)
