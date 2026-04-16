@@ -35,7 +35,29 @@ const app = document.querySelector('#app');
 let scrollObserver = null;
 let searchDebounceTimer = null;
 let syncInFlight = false;
+let paymentCountdownTimer = null;
 const LOCAL_STATE_KEY = 'dc_frontend_state_v1';
+const RPC_GET_TIMEOUT_MS = 12000;
+const RPC_POST_TIMEOUT_MS = 20000;
+
+function timeoutError(ms) {
+  return new Error(`Request timed out after ${Math.ceil(ms / 1000)}s`);
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = RPC_POST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw timeoutError(timeoutMs);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 const PAGE_TITLES = {
   home: 'Home', shop: 'Shop', cart: 'Cart',
@@ -147,6 +169,35 @@ function cartTotal()  {
     const p = productById(i.id);
     return s + (p ? p.price * i.qty : 0);
   }, 0);
+}
+
+function holdSecondsRemaining(holdExpiresAt) {
+  if (!holdExpiresAt) return 0;
+  const expiry = Date.parse(holdExpiresAt);
+  if (Number.isNaN(expiry)) return 0;
+  return Math.max(0, Math.floor((expiry - Date.now()) / 1000));
+}
+
+function updatePaymentCountdownUI() {
+  if (state.page !== 'payment' || !state.pendingPayment) return;
+  const holdLeft = holdSecondsRemaining(state.pendingPayment.holdExpiresAt);
+  const holdExpired = holdLeft <= 0;
+
+  const countdownEl = document.querySelector('[data-hold-countdown]');
+  if (countdownEl) {
+    countdownEl.textContent = holdExpired
+      ? 'Reservation expired. Return to cart and reserve again.'
+      : `Reservation window: ${holdLeft}s remaining`;
+    countdownEl.style.color = holdExpired ? 'var(--bad)' : 'var(--ok)';
+  }
+
+  const payBtn = document.querySelector('[data-pay-now]');
+  if (payBtn) {
+    payBtn.disabled = state.rpcBusy || holdExpired;
+    payBtn.textContent = holdExpired
+      ? 'Reservation Expired'
+      : (state.rpcBusy ? 'Verifying...' : `Pay ${inr(state.pendingPayment.amount)} Now`);
+  }
 }
 
 function productById(id) { return state.productIndex.get(id); }
@@ -336,8 +387,13 @@ function logoutUser() {
 
 // ─── RPC CALLS ────────────────────────────────────────────────────────────────
 async function rpcGet(path) {
-  const res = await fetch(`/api/rpc${path}`);
-  const data = await res.json();
+  const res = await fetchWithTimeout(`/api/rpc${path}`, {}, RPC_GET_TIMEOUT_MS);
+  let data = {};
+  try {
+    data = await res.json();
+  } catch {
+    data = {};
+  }
   if (!res.ok) throw new Error(data.message || 'RPC request failed');
   const route = res.headers.get('x-rpc-upstream');
   if (route) state.backendRoute = route;
@@ -345,12 +401,17 @@ async function rpcGet(path) {
 }
 
 async function rpcPost(path, payload) {
-  const res = await fetch(`/api/rpc${path}`, {
+  const res = await fetchWithTimeout(`/api/rpc${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
-  });
-  const data = await res.json();
+  }, RPC_POST_TIMEOUT_MS);
+  let data = {};
+  try {
+    data = await res.json();
+  } catch {
+    data = {};
+  }
   if (!res.ok) throw new Error(data.message || 'RPC request failed');
   const route = res.headers.get('x-rpc-upstream');
   if (route) state.backendRoute = route;
@@ -559,39 +620,64 @@ async function checkout() {
   logActivity(`Requesting stock reservation${isPriority ? ' (HIGH PRIORITY)' : ''}…`, 'info');
   logActivity('Waiting for distributed lock…', 'warning');
   render();
-  let reservation;
   try {
-    reservation = await rpcPost('/reserve_stock', {
+    const reservation = await rpcPost('/reserve_stock', {
       cart: state.cart.map(i => ({ ...i })),
       idempotencyKey: `idem-${Date.now()}`,
-      priority: isPriority
+      priority: isPriority,
+      holdSeconds: 60
     });
+
+    if (!reservation.success) {
+      logActivity(`Reservation failed: ${reservation.message}`, 'error');
+      renderToast(reservation.message, 'error');
+      return;
+    }
+
+    const orderId = `ORD-${Date.now().toString().slice(-6)}`;
+    const orderItems = state.cart.map(i => ({ ...i }));
+    state.pendingPayment = {
+      orderId,
+      items: orderItems,
+      amount: cartTotal(),
+      reservationToken: reservation.reservationToken,
+      holdExpiresAt: reservation.holdExpiresAt,
+      holdSeconds: reservation.holdSeconds,
+      createdAt: new Date().toLocaleTimeString()
+    };
+    state.orders.unshift({ orderId, status: 'AWAITING_PAYMENT', at: state.pendingPayment.createdAt, items: orderItems });
+    state.cart = [];
+    await loadProducts(state.selectedCategory);
+    persistLocalState();
+    goTo('payment');
+    logActivity(`Stock reserved for ${orderId}. Complete payment within ${reservation.holdSeconds || 60}s.`, 'success');
+    renderToast(`Order ${orderId} reserved — proceed to payment`, 'info');
   } catch (err) {
-    state.rpcBusy = false; render();
     logActivity(`Reservation error: ${err.message}`, 'error');
-    renderToast('Reservation request failed', 'error'); return;
+    renderToast(err.message || 'Reservation request failed', 'error');
+  } finally {
+    state.rpcBusy = false;
+    persistLocalState();
+    render();
   }
-  if (!reservation.success) {
-    state.rpcBusy = false; render();
-    logActivity(`Reservation failed: ${reservation.message}`, 'error');
-    renderToast(reservation.message, 'error'); return;
-  }
-  const orderId = `ORD-${Date.now().toString().slice(-6)}`;
-  const orderItems = state.cart.map(i => ({ ...i }));
-  state.pendingPayment = { orderId, items: orderItems, amount: cartTotal(), createdAt: new Date().toLocaleTimeString() };
-  state.orders.unshift({ orderId, status: 'AWAITING_PAYMENT', at: state.pendingPayment.createdAt, items: orderItems });
-  state.cart = [];
-  await loadProducts(state.selectedCategory);
-  state.rpcBusy = false;
-  persistLocalState();
-  goTo('payment');
-  logActivity(`Stock reserved for ${orderId}. Awaiting payment.`, 'success');
-  render();
-  renderToast(`Order ${orderId} reserved — proceed to payment`, 'info');
 }
 
 async function payNow(method = 'UPI') {
   if (state.rpcBusy || !state.pendingPayment) return;
+
+  const remaining = holdSecondsRemaining(state.pendingPayment.holdExpiresAt);
+  if (remaining <= 0) {
+    logActivity(`Hold expired for ${state.pendingPayment.orderId}. Please reserve again.`, 'warning');
+    state.orders = state.orders.map(o =>
+      o.orderId === state.pendingPayment.orderId ? { ...o, status: 'HOLD_EXPIRED' } : o
+    );
+    state.pendingPayment = null;
+    persistLocalState();
+    render();
+    renderToast('Reservation expired. Please checkout again.', 'warning');
+    goTo('cart');
+    return;
+  }
 
   // Read form data based on method
   let paymentDetails = {};
@@ -626,6 +712,7 @@ async function payNow(method = 'UPI') {
       orderId: state.pendingPayment.orderId,
       amount: state.pendingPayment.amount,
       paymentKey: state.pendingPayment.orderId,
+      reservationToken: state.pendingPayment.reservationToken,
       method: method,
       details: paymentDetails,
       demo_fail: state.failureDemo.simulatePaymentFailure,
@@ -649,11 +736,22 @@ async function payNow(method = 'UPI') {
     logActivity(`Payment failed: ${err.message}`, 'error');
     renderToast(err.message, 'error');
 
+    if ((err.message || '').toLowerCase().includes('reservation is no longer active')) {
+      state.orders = state.orders.map(o =>
+        o.orderId === state.pendingPayment.orderId ? { ...o, status: 'HOLD_EXPIRED' } : o
+      );
+      state.pendingPayment = null;
+      persistLocalState();
+      goTo('cart');
+      return;
+    }
+
     // Auto-compensation if server error
     if (err.message.includes('500') || state.failureDemo.simulateServerError) {
        logActivity('Server error detected. Initiating stock recovery...', 'warning');
        await rpcPost('/release_stock', {
          orderId: state.pendingPayment.orderId,
+         reservationToken: state.pendingPayment.reservationToken,
          cart: state.pendingPayment.items,
          reason: 'payment_failed'
        });
@@ -901,6 +999,8 @@ function renderPaymentPage() {
     `;
   }
   const method = state.selectedPaymentMethod || 'UPI';
+  const holdLeft = holdSecondsRemaining(state.pendingPayment.holdExpiresAt);
+  const holdExpired = holdLeft <= 0;
 
   const paymentField = method === 'CARD'
     ? `
@@ -949,6 +1049,11 @@ function renderPaymentPage() {
         </div>
         
         <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 1.2rem;">Total Amount: <strong style="color: var(--ink); font-size: 1.1rem;">${inr(state.pendingPayment.amount)}</strong></p>
+        <p data-hold-countdown style="margin:0 0 0.75rem 0; font-size:0.86rem; color:${holdExpired ? 'var(--bad)' : 'var(--ok)'};">
+          ${holdExpired
+            ? 'Reservation expired. Return to cart and reserve again.'
+            : `Reservation window: ${holdLeft}s remaining`}
+        </p>
 
         <div class="payment-tabs">
           <button class="pay-tab ${method === 'UPI' ? 'active' : ''}" data-payment-method="UPI">UPI</button>
@@ -975,8 +1080,8 @@ function renderPaymentPage() {
           </label>
         </div>
 
-        <button class="cta" style="width: 100%; margin-top: 1.5rem; font-size: 1.1rem; padding: 1rem;" data-pay-now="${method}" ${state.rpcBusy ? 'disabled' : ''}>
-          ${state.rpcBusy ? 'Verifying...' : `Pay ${inr(state.pendingPayment.amount)} Now`}
+        <button class="cta" style="width: 100%; margin-top: 1.5rem; font-size: 1.1rem; padding: 1rem;" data-pay-now="${method}" ${(state.rpcBusy || holdExpired) ? 'disabled' : ''}>
+          ${holdExpired ? 'Reservation Expired' : (state.rpcBusy ? 'Verifying...' : `Pay ${inr(state.pendingPayment.amount)} Now`)}
         </button>
       </div>
     </section>
@@ -1144,6 +1249,36 @@ function render() {
     <main class="page-shell">${renderCurrentPage()}</main>
     ${renderToasts()}
   `;
+
+  if (paymentCountdownTimer) {
+    clearInterval(paymentCountdownTimer);
+    paymentCountdownTimer = null;
+  }
+  if (state.page === 'payment' && state.pendingPayment) {
+    paymentCountdownTimer = setInterval(() => {
+      if (state.page !== 'payment' || !state.pendingPayment) {
+        clearInterval(paymentCountdownTimer);
+        paymentCountdownTimer = null;
+        return;
+      }
+
+      const remaining = holdSecondsRemaining(state.pendingPayment.holdExpiresAt);
+      if (remaining <= 0) {
+        state.orders = state.orders.map(o =>
+          o.orderId === state.pendingPayment.orderId ? { ...o, status: 'HOLD_EXPIRED' } : o
+        );
+        logActivity(`Hold expired for ${state.pendingPayment.orderId}. Stock released for next buyer.`, 'warning');
+        state.pendingPayment = null;
+        persistLocalState();
+        renderToast('Reservation expired. Please checkout again.', 'warning');
+        goTo('cart');
+        return;
+      }
+      updatePaymentCountdownUI();
+    }, 1000);
+  }
+
+  updatePaymentCountdownUI();
 
   // ── Restore search focus / cursor ──────────────────────────────────────────
   if (prevFocused) {

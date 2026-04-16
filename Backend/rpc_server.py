@@ -1,13 +1,5 @@
-"""
-===================================================
-  RPC SERVER — Product & Category Filtering Service
-  E-Commerce Microservices (XML-RPC)
-  Prices in Indian Rupees (₹)
-===================================================
-Run this FIRST before the Streamlit app.
-"""
-
 from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
+from socketserver import ThreadingMixIn
 import argparse
 import datetime
 import json
@@ -16,11 +8,9 @@ import sqlite3
 import threading
 import time
 import heapq
+import uuid
 from pathlib import Path
 
-# ─────────────────────────────────────────────────
-#  MOCK DATABASE  — Prices in INR (₹)
-# ─────────────────────────────────────────────────
 PRODUCTS_DB = [
     {"id": 1,  "name": "iPhone 15 Pro",      "category": "Electronics", "price": 99999,  "stock": 25,  "rating": 4.8},
     {"id": 2,  "name": "Samsung Galaxy S24", "category": "Electronics", "price": 74999,  "stock": 18,  "rating": 4.6},
@@ -78,6 +68,11 @@ processed_payment = {}
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = BASE_DIR / "rpc_state.db"
 DB_PATH = DEFAULT_DB_PATH
+RESERVATION_HOLD_SECONDS = 60
+
+
+class ThreadedXMLRPCServer(ThreadingMixIn, SimpleXMLRPCServer):
+    daemon_threads = True
 
 def _serialize_response(payload: dict) -> str:
     return json.dumps(payload, separators=(",", ":"))
@@ -85,6 +80,27 @@ def _serialize_response(payload: dict) -> str:
 
 def _deserialize_response(payload: str) -> dict:
     return json.loads(payload)
+
+
+def _utc_now() -> datetime.datetime:
+    return datetime.datetime.utcnow()
+
+
+def _to_utc_string(value: datetime.datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _from_utc_string(value: str) -> datetime.datetime:
+    return datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+
+
+def _seconds_until(expiry_utc: str) -> int:
+    delta = _from_utc_string(expiry_utc) - _utc_now()
+    return max(0, int(delta.total_seconds()))
+
+
+def _is_hold_active(expiry_utc: str) -> bool:
+    return _seconds_until(expiry_utc) > 0
 
 
 def get_connection() -> sqlite3.Connection:
@@ -120,6 +136,33 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reservations (
+                reservation_token TEXT PRIMARY KEY,
+                idempotency_key TEXT,
+                order_id TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                released_at TEXT,
+                release_reason TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reservation_items (
+                reservation_token TEXT NOT NULL,
+                product_id INTEGER NOT NULL,
+                qty INTEGER NOT NULL,
+                PRIMARY KEY (reservation_token, product_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reservations_status_exp ON reservations(status, expires_at)"
+        )
 
         current_count = conn.execute("SELECT COUNT(*) AS count FROM products").fetchone()["count"]
         if current_count == 0:
@@ -130,6 +173,61 @@ def init_db() -> None:
                     for p in PRODUCTS_DB
                 ]
             )
+
+
+def expire_old_reservations(conn: sqlite3.Connection) -> None:
+    now_utc = _to_utc_string(_utc_now())
+    conn.execute(
+        """
+        UPDATE reservations
+        SET status = 'EXPIRED',
+            released_at = ?,
+            release_reason = COALESCE(release_reason, 'hold_timeout')
+        WHERE status = 'ACTIVE' AND expires_at <= ?
+        """,
+        (now_utc, now_utc),
+    )
+
+
+def get_active_reserved_map(conn: sqlite3.Connection) -> dict[int, int]:
+    now_utc = _to_utc_string(_utc_now())
+    rows = conn.execute(
+        """
+        SELECT ri.product_id, SUM(ri.qty) AS qty
+        FROM reservation_items ri
+        JOIN reservations r ON r.reservation_token = ri.reservation_token
+        WHERE r.status = 'ACTIVE' AND r.expires_at > ?
+        GROUP BY ri.product_id
+        """,
+        (now_utc,),
+    ).fetchall()
+    return {int(row["product_id"]): int(row["qty"]) for row in rows}
+
+
+def get_products_with_available_stock(conn: sqlite3.Connection, category: str | None = None):
+    now_utc = _to_utc_string(_utc_now())
+    base_query = """
+        SELECT
+            p.id,
+            p.name,
+            p.category,
+            p.price,
+            MAX(p.stock - COALESCE(ar.reserved_qty, 0), 0) AS stock,
+            p.rating
+        FROM products p
+        LEFT JOIN (
+            SELECT ri.product_id, SUM(ri.qty) AS reserved_qty
+            FROM reservation_items ri
+            JOIN reservations r ON r.reservation_token = ri.reservation_token
+            WHERE r.status = 'ACTIVE' AND r.expires_at > ?
+            GROUP BY ri.product_id
+        ) ar ON ar.product_id = p.id
+    """
+    if category is None:
+        query = base_query + " ORDER BY p.id"
+        return conn.execute(query, (now_utc,)).fetchall()
+    query = base_query + " WHERE lower(p.category) = lower(?) ORDER BY p.id"
+    return conn.execute(query, (now_utc, category.strip())).fetchall()
 
 
 def load_cached_response(cache_key: str, kind: str) -> dict | None:
@@ -179,7 +277,7 @@ class PriorityMutex:
     def __init__(self):
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
-        self.queue = []  # List of tuples (priority, thread_id, event)
+        self.queue = []  
         self.owner = None
         self._counter = 0
 
@@ -218,13 +316,11 @@ def filter_by_category(category: str) -> dict:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[RPC SERVER] [{timestamp}] filter_by_category('{category}')")
     with get_connection() as conn:
+        expire_old_reservations(conn)
         if category.strip().upper() == "ALL":
-            rows = conn.execute("SELECT * FROM products ORDER BY id").fetchall()
+            rows = get_products_with_available_stock(conn)
         else:
-            rows = conn.execute(
-                "SELECT * FROM products WHERE lower(category) = lower(?) ORDER BY id",
-                (category.strip(),),
-            ).fetchall()
+            rows = get_products_with_available_stock(conn, category)
         all_categories = [row["category"] for row in conn.execute("SELECT DISTINCT category FROM products ORDER BY category").fetchall()]
 
     matched = rows_to_products(rows)
@@ -253,7 +349,28 @@ def get_product(product_id: int) -> dict:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[RPC SERVER] [{timestamp}] get_product({product_id})")
     with get_connection() as conn:
-        product_row = conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+        expire_old_reservations(conn)
+        product_row = conn.execute(
+            """
+            SELECT
+                p.id,
+                p.name,
+                p.category,
+                p.price,
+                MAX(p.stock - COALESCE(ar.reserved_qty, 0), 0) AS stock,
+                p.rating
+            FROM products p
+            LEFT JOIN (
+                SELECT ri.product_id, SUM(ri.qty) AS reserved_qty
+                FROM reservation_items ri
+                JOIN reservations r ON r.reservation_token = ri.reservation_token
+                WHERE r.status = 'ACTIVE' AND r.expires_at > ?
+                GROUP BY ri.product_id
+            ) ar ON ar.product_id = p.id
+            WHERE p.id = ?
+            """,
+            (_to_utc_string(_utc_now()), product_id),
+        ).fetchone()
     product = rows_to_products([product_row])[0] if product_row else None
     if not product:
         return {
@@ -274,16 +391,18 @@ def get_product(product_id: int) -> dict:
 def list_categories() -> dict:
     print(f"[RPC SERVER] list_categories()")
     with get_connection() as conn:
+        expire_old_reservations(conn)
         rows = conn.execute(
             "SELECT category, COUNT(*) AS count FROM products GROUP BY category ORDER BY category"
         ).fetchall()
         categories = [row["category"] for row in rows]
         counts = {row["category"]: row["count"] for row in rows}
+        total_products = conn.execute("SELECT COUNT(*) AS count FROM products").fetchone()["count"]
     return {
         "status": "success",
         "categories": categories,
         "counts": counts,
-        "total_products": len(PRODUCTS_DB),
+        "total_products": total_products,
     }
 
 
@@ -292,12 +411,20 @@ def reserve_stock(payload: dict) -> dict:
     cart = payload.get("cart", []) if isinstance(payload, dict) else []
     idempotency_key = payload.get("idempotencyKey") if isinstance(payload, dict) else None
     is_priority = payload.get("priority", False) if isinstance(payload, dict) else False
+    order_id = payload.get("orderId") if isinstance(payload, dict) else None
+    hold_seconds_raw = payload.get("holdSeconds", RESERVATION_HOLD_SECONDS) if isinstance(payload, dict) else RESERVATION_HOLD_SECONDS
+
+    try:
+        hold_seconds = int(hold_seconds_raw)
+    except (TypeError, ValueError):
+        hold_seconds = RESERVATION_HOLD_SECONDS
+    hold_seconds = max(5, min(120, hold_seconds))
     
     print(f"[RPC SERVER] [{timestamp}] reserve_stock() request received | Priority: {is_priority}")
 
     if idempotency_key:
         cached = load_cached_response(idempotency_key, "reserve_stock")
-        if cached:
+        if cached and ("holdExpiresAt" not in cached or _is_hold_active(cached["holdExpiresAt"])):
             print(f"[RPC SERVER] idempotency replay: {idempotency_key}")
             return cached
 
@@ -313,19 +440,33 @@ def reserve_stock(payload: dict) -> dict:
     priority_mutex.acquire(is_priority)
     try:
         print(f"[RPC SERVER] lock acquired by thread {threading.get_ident()} (Priority: {is_priority})")
-        
-        # DEMO: Artificial delay to make concurrency visible
-        print("[RPC SERVER] Processing reservation (3s delay for demo)...")
-        time.sleep(3)
+
+        normalized_cart = {}
+        for item in cart:
+            pid = item.get("id")
+            qty = int(item.get("qty", 0))
+            if qty <= 0:
+                return {
+                    "success": False,
+                    "message": "Invalid quantity in cart",
+                    "timestamp": timestamp,
+                }
+            normalized_cart[pid] = normalized_cart.get(pid, 0) + qty
 
         with get_connection() as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                expire_old_reservations(conn)
 
-                for item in cart:
-                    pid = item.get("id")
-                    qty = int(item.get("qty", 0))
-                    row = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
+                rows = conn.execute(
+                    f"SELECT id, name, stock FROM products WHERE id IN ({','.join(['?'] * len(normalized_cart))})",
+                    tuple(normalized_cart.keys()),
+                ).fetchall()
+                products = {row["id"]: row for row in rows}
+                reserved_map = get_active_reserved_map(conn)
+
+                for pid, qty in normalized_cart.items():
+                    row = products.get(pid)
                     if not row:
                         print(f"[RPC SERVER] product not found: id={pid}")
                         conn.rollback()
@@ -334,16 +475,10 @@ def reserve_stock(payload: dict) -> dict:
                             "message": f"Product with ID {pid} not found",
                             "timestamp": timestamp,
                         }
-                    if qty <= 0:
-                        print(f"[RPC SERVER] invalid quantity for id={pid}")
-                        conn.rollback()
-                        return {
-                            "success": False,
-                            "message": "Invalid quantity in cart",
-                            "timestamp": timestamp,
-                        }
-                    if row["stock"] < qty:
-                        print(f"[RPC SERVER] insufficient stock for {row['name']}: requested={qty}, available={row['stock']}")
+
+                    available = int(row["stock"]) - int(reserved_map.get(pid, 0))
+                    if available < qty:
+                        print(f"[RPC SERVER] insufficient stock for {row['name']}: requested={qty}, available={available}")
                         conn.rollback()
                         return {
                             "success": False,
@@ -351,18 +486,35 @@ def reserve_stock(payload: dict) -> dict:
                             "timestamp": timestamp,
                         }
 
-                for item in cart:
-                    pid = item.get("id")
-                    qty = int(item.get("qty", 0))
-                    row = conn.execute("SELECT stock FROM products WHERE id = ?", (pid,)).fetchone()
-                    before = row["stock"]
-                    conn.execute("UPDATE products SET stock = stock - ? WHERE id = ?", (qty, pid))
-                    after = before - qty
-                    print(f"[RPC SERVER] reserved id={pid} qty={qty} stock {before}->{after}")
+                created_at = _utc_now()
+                expires_at = created_at + datetime.timedelta(seconds=hold_seconds)
+                reservation_token = f"RSV-{uuid.uuid4().hex[:14].upper()}"
+                conn.execute(
+                    """
+                    INSERT INTO reservations (
+                        reservation_token, idempotency_key, order_id, status, created_at, expires_at
+                    )
+                    VALUES (?, ?, ?, 'ACTIVE', ?, ?)
+                    """,
+                    (
+                        reservation_token,
+                        idempotency_key,
+                        order_id,
+                        _to_utc_string(created_at),
+                        _to_utc_string(expires_at),
+                    ),
+                )
+
+                for pid, qty in normalized_cart.items():
+                    conn.execute(
+                        "INSERT INTO reservation_items (reservation_token, product_id, qty) VALUES (?, ?, ?)",
+                        (reservation_token, pid, qty),
+                    )
+                    print(f"[RPC SERVER] hold created for id={pid} qty={qty} token={reservation_token}")
 
                 updated = [
                     {"id": row["id"], "stock": row["stock"]}
-                    for row in conn.execute("SELECT id, stock FROM products ORDER BY id").fetchall()
+                    for row in get_products_with_available_stock(conn)
                 ]
                 conn.commit()
             except Exception:
@@ -371,7 +523,10 @@ def reserve_stock(payload: dict) -> dict:
 
         response = {
             "success": True,
-            "message": "Stock reserved successfully",
+            "message": f"Stock reserved for {hold_seconds}s. Complete payment before expiry.",
+            "reservationToken": reservation_token,
+            "holdExpiresAt": _to_utc_string(expires_at),
+            "holdSeconds": hold_seconds,
             "updated_products": updated,
             "timestamp": timestamp,
         }
@@ -390,37 +545,65 @@ def release_stock(payload: dict) -> dict:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cart = payload.get("cart", []) if isinstance(payload, dict) else []
     reason = payload.get("reason", "compensation") if isinstance(payload, dict) else "compensation"
+    reservation_token = payload.get("reservationToken") if isinstance(payload, dict) else None
+    order_id = payload.get("orderId") if isinstance(payload, dict) else None
     print(f"[RPC SERVER] [{timestamp}] release_stock() reason={reason}")
 
-    if not cart:
+    if not cart and not reservation_token and not order_id:
         return {
             "success": False,
             "message": "Cart is empty",
             "timestamp": timestamp,
         }
 
-    with get_connection() as conn:
-        print("[RPC SERVER] lock acquired for release_stock")
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            for item in cart:
-                pid = item.get("id")
-                qty = int(item.get("qty", 0))
-                row = conn.execute("SELECT stock, name FROM products WHERE id = ?", (pid,)).fetchone()
-                if not row:
-                    continue
-                before = row["stock"]
-                conn.execute("UPDATE products SET stock = stock + ? WHERE id = ?", (max(qty, 0), pid))
-                after = before + max(qty, 0)
-                print(f"[RPC SERVER] released id={pid} qty={qty} stock {before}->{after}")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    priority_mutex.acquire(False)
+    try:
+        with get_connection() as conn:
+            print("[RPC SERVER] lock acquired for release_stock")
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                expire_old_reservations(conn)
+
+                target = None
+                if reservation_token:
+                    target = conn.execute(
+                        "SELECT reservation_token FROM reservations WHERE reservation_token = ? AND status = 'ACTIVE'",
+                        (reservation_token,),
+                    ).fetchone()
+                if not target and order_id:
+                    target = conn.execute(
+                        """
+                        SELECT reservation_token
+                        FROM reservations
+                        WHERE order_id = ? AND status = 'ACTIVE'
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (order_id,),
+                    ).fetchone()
+
+                if target:
+                    conn.execute(
+                        """
+                        UPDATE reservations
+                        SET status = 'CANCELLED', released_at = ?, release_reason = ?
+                        WHERE reservation_token = ? AND status = 'ACTIVE'
+                        """,
+                        (_to_utc_string(_utc_now()), reason, target["reservation_token"]),
+                    )
+                    message = "Reservation released"
+                else:
+                    message = "No active reservation found to release"
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+    finally:
+        priority_mutex.release()
 
     return {
         "success": True,
-        "message": "Stock released",
+        "message": message,
         "timestamp": timestamp,
     }
 
@@ -430,6 +613,7 @@ def process_payment(payload: dict) -> dict:
     order_id = payload.get("orderId", "UNKNOWN") if isinstance(payload, dict) else "UNKNOWN"
     amount = int(payload.get("amount", 0)) if isinstance(payload, dict) else 0
     payment_key = (payload.get("paymentKey") if isinstance(payload, dict) else None) or order_id
+    reservation_token = payload.get("reservationToken") if isinstance(payload, dict) else None
     demo_fail = payload.get("demo_fail", False) if isinstance(payload, dict) else False
     simulate_server_error = payload.get("simulate_server_error", False) if isinstance(payload, dict) else False
     print(f"[PAYMENT SERVICE] [{timestamp}] process_payment() order={order_id} amount={amount} demo_fail={demo_fail}")
@@ -451,33 +635,134 @@ def process_payment(payload: dict) -> dict:
         print(f"[PAYMENT SERVICE] simulated server error for {order_id}")
         return response
 
-    # If demo_fail flag is set, force failure
-    if demo_fail:
-        approved = False
-        print(f"[PAYMENT SERVICE] DEMO MODE: Payment failure injected (demo_fail=True)")
-    else:
-        approved = random.random() > 0.2
-        if amount <= 0:
-            approved = False
-
-    if approved:
-        response = {
-            "success": True,
-            "status": "PAID",
-            "message": "Payment approved",
-            "orderId": order_id,
-            "timestamp": timestamp,
-        }
-        print(f"[PAYMENT SERVICE] payment success for {order_id}")
-    else:
+    if not reservation_token:
         response = {
             "success": False,
-            "status": "DECLINED",
-            "message": "Payment declined by bank simulator" if not demo_fail else "Payment failure (demo mode)",
+            "status": "INVALID_REQUEST",
+            "message": "Missing reservation token",
             "orderId": order_id,
             "timestamp": timestamp,
         }
-        print(f"[PAYMENT SERVICE] payment failed for {order_id}")
+        store_cached_response(payment_key, "payment", response)
+        return response
+
+    priority_mutex.acquire(False)
+    try:
+        with get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            expire_old_reservations(conn)
+
+            reservation = conn.execute(
+                """
+                SELECT reservation_token, status, expires_at
+                FROM reservations
+                WHERE reservation_token = ?
+                """,
+                (reservation_token,),
+            ).fetchone()
+
+            if not reservation:
+                conn.rollback()
+                response = {
+                    "success": False,
+                    "status": "INVALID_RESERVATION",
+                    "message": "Reservation not found",
+                    "orderId": order_id,
+                    "timestamp": timestamp,
+                }
+                store_cached_response(payment_key, "payment", response)
+                return response
+
+            if reservation["status"] != "ACTIVE":
+                conn.rollback()
+                response = {
+                    "success": False,
+                    "status": "HOLD_EXPIRED",
+                    "message": "Reservation is no longer active",
+                    "orderId": order_id,
+                    "timestamp": timestamp,
+                }
+                store_cached_response(payment_key, "payment", response)
+                return response
+
+            # If demo_fail flag is set, force failure
+            if demo_fail:
+                approved = False
+                print(f"[PAYMENT SERVICE] DEMO MODE: Payment failure injected (demo_fail=True)")
+            else:
+                approved = random.random() > 0.2
+                if amount <= 0:
+                    approved = False
+
+            if approved:
+                items = conn.execute(
+                    "SELECT product_id, qty FROM reservation_items WHERE reservation_token = ?",
+                    (reservation_token,),
+                ).fetchall()
+                for item in items:
+                    row = conn.execute("SELECT stock, name FROM products WHERE id = ?", (item["product_id"],)).fetchone()
+                    if not row or row["stock"] < item["qty"]:
+                        conn.rollback()
+                        response = {
+                            "success": False,
+                            "status": "INVENTORY_MISMATCH",
+                            "message": "Inventory mismatch while finalizing payment",
+                            "orderId": order_id,
+                            "timestamp": timestamp,
+                        }
+                        store_cached_response(payment_key, "payment", response)
+                        return response
+
+                for item in items:
+                    conn.execute(
+                        "UPDATE products SET stock = stock - ? WHERE id = ?",
+                        (item["qty"], item["product_id"]),
+                    )
+
+                conn.execute(
+                    """
+                    UPDATE reservations
+                    SET status = 'CONFIRMED',
+                        order_id = ?,
+                        released_at = ?,
+                        release_reason = 'paid'
+                    WHERE reservation_token = ?
+                    """,
+                    (order_id, _to_utc_string(_utc_now()), reservation_token),
+                )
+                conn.commit()
+
+                response = {
+                    "success": True,
+                    "status": "PAID",
+                    "message": "Payment approved",
+                    "orderId": order_id,
+                    "timestamp": timestamp,
+                }
+                print(f"[PAYMENT SERVICE] payment success for {order_id}")
+            else:
+                conn.execute(
+                    """
+                    UPDATE reservations
+                    SET status = 'CANCELLED',
+                        order_id = ?,
+                        released_at = ?,
+                        release_reason = 'payment_declined'
+                    WHERE reservation_token = ?
+                    """,
+                    (order_id, _to_utc_string(_utc_now()), reservation_token),
+                )
+                conn.commit()
+                response = {
+                    "success": False,
+                    "status": "DECLINED",
+                    "message": "Payment declined by bank simulator" if not demo_fail else "Payment failure (demo mode)",
+                    "orderId": order_id,
+                    "timestamp": timestamp,
+                }
+                print(f"[PAYMENT SERVICE] payment failed for {order_id}")
+    finally:
+        priority_mutex.release()
 
     store_cached_response(payment_key, "payment", response)
 
@@ -489,7 +774,7 @@ def start_server(host="0.0.0.0", port=8001, db_path=None):
     DB_PATH = Path(db_path).resolve() if db_path else DEFAULT_DB_PATH
     init_db()
 
-    server = SimpleXMLRPCServer(
+    server = ThreadedXMLRPCServer(
         (host, port),
         requestHandler=RequestHandler,
         logRequests=False,
